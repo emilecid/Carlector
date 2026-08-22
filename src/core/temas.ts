@@ -1,0 +1,18 @@
+import type { TemaInterfaz } from "./modelos.ts";
+
+export const BIBLIOTECA_TEMAS: TemaInterfaz[] = [
+  { id: "papel", nombre: "Papel cálido", categoria: "Lectura", tema: "claro", colores: { fondo: "#efeee9", superficie: "#f9f8f4", panel: "#e8e6df", borde: "#d3d0c6", texto: "#25241f", atenuado: "#716e65", acento: "#bc5c39", resaltado: "#f4c58e" } },
+  { id: "oceano", nombre: "Océano profundo", categoria: "Lectura", tema: "oscuro", colores: { fondo: "#0b1820", superficie: "#102631", panel: "#183744", borde: "#28505e", texto: "#dcecf0", atenuado: "#8aabb3", acento: "#36a9c7", resaltado: "#4d8fa3" } },
+  { id: "bosque", nombre: "Bosque musgo", categoria: "Lectura", tema: "oscuro", colores: { fondo: "#141b16", superficie: "#1d2820", panel: "#28372c", borde: "#405343", texto: "#e2e8dc", atenuado: "#9dac98", acento: "#7ca56d", resaltado: "#9eaa62" } },
+  { id: "lavanda", nombre: "Lavanda tenue", categoria: "Lectura", tema: "claro", colores: { fondo: "#eeeaf2", superficie: "#faf8fc", panel: "#e1d9e8", borde: "#c8bbd2", texto: "#332d38", atenuado: "#766a7e", acento: "#805a9d", resaltado: "#d9bde8" } },
+  { id: "catedral", nombre: "Catedral gótica", categoria: "Gótico", tema: "oscuro", colores: { fondo: "#0d0c10", superficie: "#17151c", panel: "#211e29", borde: "#4a4257", texto: "#e8e1ee", atenuado: "#9b8fa5", acento: "#76538f", resaltado: "#684b75" } },
+  { id: "luto-victoriano", nombre: "Luto victoriano", categoria: "Gótico", tema: "oscuro", colores: { fondo: "#090909", superficie: "#141313", panel: "#201d1d", borde: "#4c4545", texto: "#e6dfd7", atenuado: "#958b82", acento: "#817268", resaltado: "#66584f" } },
+  { id: "academia-oscura", nombre: "Academia oscura", categoria: "Gótico", tema: "oscuro", colores: { fondo: "#17120e", superficie: "#241c16", panel: "#30251d", borde: "#574536", texto: "#eadcc7", atenuado: "#a48f76", acento: "#9b7545", resaltado: "#806038" } },
+  { id: "obsidiana", nombre: "Obsidiana", categoria: "Gótico", tema: "oscuro", colores: { fondo: "#050607", superficie: "#0e1113", panel: "#171b1e", borde: "#394047", texto: "#e2e5e7", atenuado: "#8c959c", acento: "#536b78", resaltado: "#405c69" } },
+  { id: "nocturno-violeta", nombre: "Nocturno violeta", categoria: "Gótico", tema: "oscuro", colores: { fondo: "#100b16", superficie: "#1c1226", panel: "#291a36", borde: "#563a68", texto: "#eadff0", atenuado: "#a18baa", acento: "#925db0", resaltado: "#74498a" } },
+  { id: "carmesi", nombre: "Carmesí nocturno", categoria: "Vampirismo", tema: "oscuro", colores: { fondo: "#100708", superficie: "#1e0c0f", panel: "#2c1116", borde: "#5b252d", texto: "#f0dfe1", atenuado: "#aa858a", acento: "#a62435", resaltado: "#7d2733" } },
+  { id: "sangre-antigua", nombre: "Sangre antigua", categoria: "Vampirismo", tema: "oscuro", colores: { fondo: "#0b0505", superficie: "#180808", panel: "#280d0d", borde: "#541d1d", texto: "#ead7ce", atenuado: "#9c7870", acento: "#7d111b", resaltado: "#68151d" } },
+  { id: "castillo-dracula", nombre: "Castillo Drácula", categoria: "Vampirismo", tema: "oscuro", colores: { fondo: "#08080b", superficie: "#111119", panel: "#1c1a25", borde: "#413b50", texto: "#e6e2e9", atenuado: "#918b99", acento: "#8f1d2c", resaltado: "#592d3b" } },
+  { id: "rosa-sangrienta", nombre: "Rosa sangrienta", categoria: "Vampirismo", tema: "oscuro", colores: { fondo: "#160a10", superficie: "#25101a", panel: "#351625", borde: "#663047", texto: "#f2dfe8", atenuado: "#b48a9d", acento: "#bd315e", resaltado: "#8e3656" } },
+  { id: "velo-carmesi", nombre: "Velo carmesí", categoria: "Vampirismo", tema: "claro", colores: { fondo: "#eadcdf", superficie: "#f7eff1", panel: "#dcc8cd", borde: "#b99aa2", texto: "#3e2027", atenuado: "#7d5d65", acento: "#8d2639", resaltado: "#d99ba7" } },
+];
