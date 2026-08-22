@@ -8,6 +8,7 @@ const CLAVE_FRAGMENTOS = "carlector.fragmentos.v1";
 const CLAVE_DESTACADOS = "carlector.fragmentos_destacados.v1";
 const CLAVE_TEMAS_PERSONALIZADOS = "carlector.temas_personalizados.v1";
 const CLAVE_REPOSITORIOS_VOZ = "carlector.repositorios_voz.v1";
+const CLAVE_INFORMES_ERROR = "carlector.informes_error.v1";
 
 function leerJson<T>(clave: string, alternativa: T): T {
   try {
@@ -54,6 +55,12 @@ export const persistencia = {
   },
   guardarRepositoriosVoz(estados: Record<string, boolean>): void {
     localStorage.setItem(CLAVE_REPOSITORIOS_VOZ, JSON.stringify(estados));
+  },
+  informesError(): boolean {
+    return leerJson<boolean>(CLAVE_INFORMES_ERROR, true);
+  },
+  guardarInformesError(habilitados: boolean): void {
+    localStorage.setItem(CLAVE_INFORMES_ERROR, JSON.stringify(habilitados));
   },
   perfil(): PerfilLectura {
     return normalizar_perfil(leerJson<Partial<PerfilLectura>>(CLAVE_PERFIL, PERFIL_PREDETERMINADO));

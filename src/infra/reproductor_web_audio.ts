@@ -10,9 +10,9 @@ export class ReproductorWebAudio {
     this.crear_contexto = crear_contexto;
   }
 
-  desbloquear(): void {
+  async desbloquear(): Promise<void> {
     const contexto = this.obtener_contexto();
-    if (contexto.state === "suspended") void contexto.resume().catch(() => undefined);
+    if (contexto.state === "suspended") await contexto.resume();
   }
 
   async reproducir(datos: ArrayBuffer, al_terminar: () => void, al_iniciar?: (duracion_segundos: number) => void): Promise<boolean> {
