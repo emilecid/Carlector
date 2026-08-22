@@ -2,7 +2,7 @@ mod biblioteca;
 mod kokoro;
 
 use std::fs;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use biblioteca::{abrir_base_datos, descubrir_documentos_directorio, Carpeta, Documento, ErrorBiblioteca, FragmentoGuardado, RepositorioBiblioteca};
 use kokoro::{EstadoKokoro, MotorKokoro};
@@ -10,22 +10,30 @@ use tauri::{Manager, State};
 
 struct EstadoAplicacion {
     biblioteca: Mutex<RepositorioBiblioteca>,
-    kokoro: tokio::sync::Mutex<MotorKokoro>,
+    kokoro: Arc<Mutex<MotorKokoro>>,
 }
 
 #[tauri::command]
 async fn estado_kokoro(estado: State<'_, EstadoAplicacion>) -> Result<EstadoKokoro, String> {
-    estado.kokoro.lock().await.estado()
+    estado.kokoro.lock().map_err(|_| "No fue posible bloquear Kokoro".to_string())?.estado()
 }
 
 #[tauri::command]
 async fn instalar_kokoro(ruta_modelo: String, ruta_voces: String, estado: State<'_, EstadoAplicacion>) -> Result<EstadoKokoro, String> {
-    estado.kokoro.lock().await.instalar(std::path::Path::new(&ruta_modelo), std::path::Path::new(&ruta_voces)).await
+    let kokoro = Arc::clone(&estado.kokoro);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut motor = kokoro.lock().map_err(|_| "No fue posible bloquear Kokoro".to_string())?;
+        tauri::async_runtime::block_on(motor.instalar(std::path::Path::new(&ruta_modelo), std::path::Path::new(&ruta_voces)))
+    }).await.map_err(|error| format!("Falló la tarea de instalación Kokoro: {error}"))?
 }
 
 #[tauri::command]
 async fn sintetizar_kokoro(texto: String, voz: Option<String>, velocidad: f32, idioma: Option<String>, estado: State<'_, EstadoAplicacion>) -> Result<Vec<u8>, String> {
-    estado.kokoro.lock().await.sintetizar(&texto, voz.as_deref(), velocidad, idioma.as_deref()).await
+    let kokoro = Arc::clone(&estado.kokoro);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut motor = kokoro.lock().map_err(|_| "No fue posible bloquear Kokoro".to_string())?;
+        tauri::async_runtime::block_on(motor.sintetizar(&texto, voz.as_deref(), velocidad, idioma.as_deref()))
+    }).await.map_err(|error| format!("Falló la tarea de síntesis Kokoro: {error}"))?
 }
 
 #[tauri::command]
@@ -131,6 +139,7 @@ fn leer_cache_documento(documento_id: String, estado: State<'_, EstadoAplicacion
 pub fn ejecutar() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|aplicacion| {
             let directorio_datos = aplicacion.path().app_data_dir()?;
             fs::create_dir_all(&directorio_datos)?;
@@ -141,7 +150,7 @@ pub fn ejecutar() {
             }
             let conexion = abrir_base_datos(&ruta_actual)
                 .map_err(|error: ErrorBiblioteca| error.to_string())?;
-            aplicacion.manage(EstadoAplicacion { biblioteca: Mutex::new(conexion), kokoro: tokio::sync::Mutex::new(MotorKokoro::nuevo(&directorio_datos)) });
+            aplicacion.manage(EstadoAplicacion { biblioteca: Mutex::new(conexion), kokoro: Arc::new(Mutex::new(MotorKokoro::nuevo(&directorio_datos))) });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![estado_kokoro, instalar_kokoro, sintetizar_kokoro, listar_documentos, importar_documento, guardar_progreso, leer_documento, listar_documentos_directorio, listar_carpetas, crear_carpeta, renombrar_carpeta, eliminar_carpeta, mover_documento, editar_documento, reordenar_documentos, eliminar_documento, guardar_fragmento, listar_fragmentos, eliminar_fragmento, cambiar_destacado_fragmento, guardar_cache_documento, leer_cache_documento])

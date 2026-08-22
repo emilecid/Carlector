@@ -7,7 +7,9 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:3px soli
 .aplicacion { display:grid; grid-template-rows:var(--alto-cabecera) minmax(0,1fr) var(--alto-reproductor); height:100vh; }
 .barra-superior { display:grid; grid-template-columns:auto auto minmax(180px,1fr) auto; align-items:center; gap:12px; padding:0 18px; border-bottom:1px solid var(--borde); background:var(--superficie); }
 .marca { display:flex; align-items:center; gap:10px; min-width:0; font-weight:750; }
-.marca-simbolo { display:grid; place-items:center; width:31px; height:31px; border-radius:10px; color:white; background:var(--acento); }
+.dedicatoria { position:relative; font-size:11px; }
+.dedicatoria summary { cursor:pointer; color:var(--atenuado); }
+.dedicatoria p { position:absolute; z-index:130; top:26px; left:0; width:260px; margin:0; padding:14px; border:1px solid var(--borde); border-radius:10px; color:var(--texto); background:var(--superficie); box-shadow:0 14px 34px rgb(20 18 16 / 22%); line-height:1.55; }
 .pestanas { display:flex; align-self:stretch; gap:4px; }
 .pestana { padding:0 14px; color:var(--atenuado); background:transparent; border-bottom:2px solid transparent; }
 .pestana.activa { color:var(--texto); border-color:var(--acento); }
@@ -45,6 +47,11 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:3px soli
 .carga-importacion progress { width:100%; accent-color:var(--acento); }
 .carga-importacion small { color:var(--atenuado); }
 .panel-seccion { padding:18px 14px; border-bottom:1px solid var(--borde); }
+.grupo-configuracion { padding:0; }
+.grupo-configuracion>summary { display:flex; align-items:center; justify-content:space-between; padding:16px 14px; cursor:pointer; color:var(--atenuado); font-size:11px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; }
+.grupo-configuracion>summary::marker { color:var(--acento); }
+.contenido-grupo-configuracion { padding:2px 14px 18px; }
+.campo-voz-habilitada { margin-top:12px; }
 .panel-titulo { margin:0 0 12px; font-size:11px; text-transform:uppercase; letter-spacing:.12em; color:var(--atenuado); }
 .navegacion { display:grid; gap:4px; }
 .nav-item { display:flex; gap:9px; width:100%; padding:9px 10px; border-radius:9px; background:transparent; text-align:left; color:var(--atenuado); }
@@ -149,11 +156,13 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:3px soli
 .interruptor-repositorio { display:flex; align-items:center; gap:6px; font-size:12px; }
 .interruptor-repositorio input { accent-color:var(--acento); }
 .lista-paquetes-voz { display:grid; gap:5px; }
-.lista-paquetes-voz section { display:grid; grid-template-columns:minmax(0,1fr) 85px 150px; align-items:center; gap:10px; padding:9px 10px; border-radius:9px; background:var(--superficie); }
+.lista-paquetes-voz section { display:grid; grid-template-columns:minmax(0,1fr) 150px; align-items:center; gap:10px; padding:9px 10px; border-radius:9px; background:var(--superficie); }
 .lista-paquetes-voz strong,.lista-paquetes-voz span { display:block; font-size:11px; }
 .lista-paquetes-voz div>span,.tarjeta-repositorio>small { color:var(--atenuado); }
 .lista-paquetes-voz button { padding:7px; border-radius:7px; color:white; background:var(--acento); font-size:11px; }
 .lista-paquetes-voz button:disabled { color:var(--atenuado); background:var(--panel); cursor:not-allowed; }
+.descargas-paquete { display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; }
+.lista-paquetes-voz .descarga-paquete { padding:5px 7px; color:var(--texto); border:1px solid var(--borde); background:var(--panel); text-align:left; }
 .tarjeta-repositorio>small { display:block; margin-top:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px; }
 .lista-biblioteca-temas { overflow:auto; padding:22px 24px; }
 .grupo-temas+ .grupo-temas { margin-top:25px; }
@@ -183,6 +192,8 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:3px soli
 .reproductor { display:flex; align-items:center; justify-content:center; gap:10px; }
 .reproducir { display:grid; place-items:center; width:46px; height:46px; border-radius:50%; color:white; background:var(--acento); }
 .control-velocidad { padding:7px 18px; display:grid; gap:5px; color:var(--atenuado); font-size:12px; }
+.control-velocidad-voz { display:grid; gap:7px; margin:4px 0 15px; padding:10px; border:1px solid var(--borde); border-radius:10px; background:var(--fondo); color:var(--atenuado); font-size:12px; }
+.control-velocidad-voz .velocidad-linea { grid-template-columns:26px minmax(64px,1fr) 26px 34px; }
 .velocidad-linea { display:grid; grid-template-columns:26px minmax(80px,1fr) 26px 34px; align-items:center; gap:6px; }
 .velocidad-linea input { width:100%; accent-color:var(--acento); }
 .velocidad-ajuste,.velocidades-rapidas button { border:1px solid var(--borde); border-radius:7px; background:var(--panel); }

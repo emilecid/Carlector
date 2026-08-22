@@ -1,0 +1,5 @@
+packages:
+  - "."
+
+overrides:
+  "@xmldom/xmldom": "0.8.15"

@@ -55,6 +55,10 @@ export function ajustar_velocidad(velocidad: number, cambio: number): number {
   return Math.min(3, Math.max(0.5, Math.round((velocidad + cambio) * 10) / 10));
 }
 
+export function ajustar_palabras_por_minuto(palabras: number, cambio: number): number {
+  return Math.min(1200, Math.max(60, Math.round((palabras + cambio) / 10) * 10));
+}
+
 export function normalizar_perfil(valor: PerfilLecturaParcial): PerfilLectura {
   const colores_base = valor.tema === "oscuro" ? TEMAS_PREDEFINIDOS.nocturno!.colores : PERFIL_PREDETERMINADO.colores;
   return {

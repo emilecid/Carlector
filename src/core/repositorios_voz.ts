@@ -1,4 +1,4 @@
-export type TipoMotorVoz = "sistema" | "kokoro_onnx" | "piper";
+export type TipoMotorVoz = "sistema" | "kokoro_onnx";
 
 export interface PaqueteVozRepositorio {
   id: string;
@@ -11,6 +11,15 @@ export interface PaqueteVozRepositorio {
   hash?: { algoritmo: "sha256" | "md5"; valor: string };
   instalable: boolean;
   origen_instalacion?: "remoto" | "archivos_locales";
+  descargas?: DescargaPaqueteVoz[];
+}
+
+export interface DescargaPaqueteVoz {
+  id: "modelo" | "voces";
+  nombre: string;
+  url: string;
+  tamano_bytes: number;
+  sha256: string;
 }
 
 export interface RepositorioVoz {
@@ -33,22 +42,22 @@ export interface ResultadoValidacionRepositorio {
 
 export const REPOSITORIOS_VOZ_INTEGRADOS: RepositorioVoz[] = [
   {
-    id: "sistema-local", nombre: "Voces del sistema", motor: "sistema", descripcion: "Voces ya instaladas en macOS o Linux; no requiere descarga.",
+    id: "sistema-local", nombre: "Voces del sistema", motor: "sistema", descripcion: "",
     url_indice: null, url_proyecto: null, licencia: "Provista por el sistema operativo", activo: true, oficial: true,
-    paquetes: [{ id: "sistema", nombre: "Motor del sistema", version: "local", tamano_bytes: 0, idiomas: ["según sistema"], instalable: true }],
+    paquetes: [],
   },
   {
-    id: "kokoro-onnx-oficial", nombre: "Kokoro ONNX", motor: "kokoro_onnx", descripcion: "Modelo Kokoro 1.0 optimizado para ONNX Runtime. Fuente principal prevista para Carlector.",
+    id: "kokoro-onnx-oficial", nombre: "Kokoro ONNX", motor: "kokoro_onnx", descripcion: "",
     url_indice: "https://api.github.com/repos/thewh1teagle/kokoro-onnx/releases/tags/model-files-v1.0", url_proyecto: "https://github.com/thewh1teagle/kokoro-onnx", licencia: "MIT (adaptador) · Apache-2.0 (modelo)", activo: true, oficial: true,
-    paquetes: [{ id: "kokoro-v1-int8", nombre: "Kokoro 1.0 ONNX + voces", version: "1.0", tamano_bytes: 120_575_669, idiomas: ["inglés verificado"], variante: "CPU · archivos locales", licencia: "Apache-2.0", instalable: true, origen_instalacion: "archivos_locales" }],
-  },
-  {
-    id: "piper-voces", nombre: "Piper Voices", motor: "piper", descripcion: "Catálogo comunitario de voces ONNX. El motor se integrará detrás del mismo contrato modular.",
-    url_indice: "https://huggingface.co/rhasspy/piper-voices/resolve/main/voices.json", url_proyecto: "https://github.com/rhasspy/piper", licencia: "MIT en catálogo histórico; revisar MODEL_CARD por voz", activo: false, oficial: false,
-    paquetes: [
-      { id: "es_AR-daniela-high", nombre: "Daniela", version: "1.0.0", tamano_bytes: 114_206_259, idiomas: ["es-AR"], variante: "alta", licencia: "Consultar MODEL_CARD", hash: { algoritmo: "md5", valor: "e373fb657c93877dbc438badeadff4cb" }, instalable: false },
-      { id: "es_ES-davefx-medium", nombre: "DaveFX", version: "1.0.0", tamano_bytes: 63_206_111, idiomas: ["es-ES"], variante: "media", licencia: "Consultar MODEL_CARD", hash: { algoritmo: "md5", valor: "dc515cd4ecc5f6f72fe14a941188fc9c" }, instalable: false },
-    ],
+    paquetes: [{
+      id: "kokoro-v1", nombre: "Kokoro 1.0 ONNX + voces multilingües", version: "1.0", tamano_bytes: 353_746_785,
+      idiomas: ["español", "inglés estadounidense", "inglés británico"], variante: "CPU · descarga oficial", licencia: "Apache-2.0",
+      instalable: true, origen_instalacion: "archivos_locales",
+      descargas: [
+        { id: "modelo", nombre: "Descargar modelo ONNX", url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx", tamano_bytes: 325_532_387, sha256: "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5" },
+        { id: "voces", nombre: "Descargar voces (incluye español)", url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin", tamano_bytes: 28_214_398, sha256: "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d" },
+      ],
+    }],
   },
 ];
 
@@ -60,6 +69,9 @@ export function validar_repositorio_voz(repositorio: RepositorioVoz): ResultadoV
     if (!paquete.id.trim() || !paquete.nombre.trim() || !paquete.version.trim()) errores.push("Paquete sin identidad o versión.");
     if (!Number.isFinite(paquete.tamano_bytes) || paquete.tamano_bytes < 0) errores.push("Tamaño de paquete inválido.");
     if (!paquete.idiomas.length) errores.push("Paquete sin idioma declarado.");
+    for (const descarga of paquete.descargas ?? []) {
+      if (!descarga.url.startsWith("https://") || !/^[a-f0-9]{64}$/u.test(descarga.sha256)) errores.push("Descarga remota insegura o sin SHA-256.");
+    }
     if (paquete.instalable && paquete.origen_instalacion !== "archivos_locales" && repositorio.motor !== "sistema" && paquete.hash?.algoritmo !== "sha256") errores.push("Paquete remoto instalable sin SHA-256.");
   }
   return { valido: errores.length === 0, errores };

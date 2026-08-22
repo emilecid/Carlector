@@ -13,14 +13,14 @@ export function resolver_control_paquete_voz(
   kokoro_instalado: boolean,
 ): ControlPaqueteVoz {
   if (repositorio.motor === "sistema") {
-    return { accion: "ninguna", etiqueta: "Incluido", habilitado: false, estado: "Disponible mediante el sistema" };
+    return { accion: "ninguna", etiqueta: "", habilitado: false, estado: "" };
   }
   if (repositorio.motor === "kokoro_onnx") {
     return {
       accion: "vincular_kokoro",
       etiqueta: kokoro_instalado ? "Reparar o revincular" : "Vincular modelo y voces",
       habilitado: repositorio.activo && paquete.instalable,
-      estado: kokoro_instalado ? "Instalado para Carlector" : "Faltan archivos del modelo",
+      estado: kokoro_instalado ? "" : "Faltan archivos del modelo",
     };
   }
   return { accion: "ninguna", etiqueta: "Próximamente", habilitado: false, estado: "Integración pendiente" };

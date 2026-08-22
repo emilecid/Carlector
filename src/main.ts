@@ -1,23 +1,26 @@
 import { agregar_documento, buscar_documentos, filtrar_documentos, reordenar_documentos, type FiltroBiblioteca } from "./core/biblioteca.ts";
 import { normalizar_binario } from "./core/binarios.ts";
+import { mostrar_configuracion_kokoro, normalizar_configuracion_kokoro, VOCES_KOKORO } from "./core/configuracion_voz.ts";
 import { buscar_indices_texto } from "./core/busqueda_lector.ts";
 import { calcular_ventana_renderizado, crear_lotes_renderizado } from "./core/carga_documento.ts";
+import { calcular_plan_rsvp, indices_locuciones_adelantadas, type PasoRsvp } from "./core/cola_kokoro.ts";
 import { convertir_bloques_a_texto, type DocumentoProcesado } from "./core/documentos.ts";
 import type { CarpetaBiblioteca, DocumentoBiblioteca, FragmentoGuardado, FragmentoLectura, PerfilLectura, PoliticaMatematica } from "./core/modelos.ts";
 import { debe_guardar_progreso, es_atajo_reproduccion, fragmento_esta_destacado, resolver_destino_indice } from "./core/herramientas_lectura.ts";
 import { resolver_indice_fragmento } from "./core/navegacion_lector.ts";
 import { calcular_posicion_superpuesta, crear_ejecutor_diferido } from "./core/interfaz.ts";
 import { resolver_control_paquete_voz } from "./core/interfaz_voz.ts";
-import { NOMBRE_APLICACION } from "./core/marca.ts";
-import { ajustar_velocidad, clases_visibilidad_paneles, PERFIL_PREDETERMINADO, TEMAS_PREDEFINIDOS, normalizar_perfil } from "./core/perfiles.ts";
+import { ajustar_palabras_por_minuto, ajustar_velocidad, clases_visibilidad_paneles, TEMAS_PREDEFINIDOS, normalizar_perfil } from "./core/perfiles.ts";
 import { segmentar_bloques, segmentar_texto } from "./core/segmentacion.ts";
 import { planificar_locuciones } from "./core/tts.ts";
 import { BIBLIOTECA_TEMAS } from "./core/temas.ts";
 import { combinar_estado_repositorios, type RepositorioVoz } from "./core/repositorios_voz.ts";
+import { ReproductorWebAudio } from "./infra/reproductor_web_audio.ts";
 import { persistencia } from "./infra/persistencia.ts";
 import DOMPurify from "dompurify";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 const TEXTO_DEMOSTRACION = `La lectura asistida coordina atención visual y narración local. El documento se divide en fragmentos manejables para avanzar sin generar un audiolibro completo.
 
@@ -38,7 +41,6 @@ let temas_personalizados = persistencia.temasPersonalizados();
 let estados_repositorios_voz = persistencia.repositoriosVoz();
 let repositorios_voz = combinar_estado_repositorios(estados_repositorios_voz);
 let kokoro_instalado = false;
-let directorio_kokoro = "";
 let fragmentos_guardados: FragmentoGuardado[] = persistencia.fragmentos();
 let filtro_biblioteca: FiltroBiblioteca = { tipo: "todos" };
 let consulta_biblioteca = "";
@@ -55,16 +57,21 @@ const UMBRAL_RECARGA_TTS = 4;
 const TAMANO_LOTE_RENDERIZADO = 320;
 const TAMANO_VENTANA_DOM = 600;
 const VERSION_CACHE_DOCUMENTO = 3;
+const CANTIDAD_ADELANTADA_KOKORO = 3;
 let indice_resaltado_anterior = -1;
 let ultimo_guardado_progreso = 0;
 let generacion_voz = 0;
+let preparando_voz = false;
 let siguiente_indice_cola = 0;
 let locuciones_pendientes = 0;
 let generacion_renderizado = 0;
 let documento_renderizando = false;
 let temporizador_avance: number | null = null;
 let indice_unidad_rsvp = 0;
-let audio_kokoro: HTMLAudioElement | null = null;
+const reproductor_kokoro = new ReproductorWebAudio();
+interface SolicitudAudioKokoro { promesa: Promise<AudioBuffer>; lista: boolean }
+const audios_kokoro = new Map<string, SolicitudAudioKokoro>();
+let cadena_sintesis_kokoro: Promise<void> = Promise.resolve();
 let consulta_global = "";
 let resultados_busqueda_lector: number[] = [];
 let posicion_resultado_busqueda = -1;
@@ -407,9 +414,10 @@ function actualizar_destacados_visibles(): void {
 
 function detener_voz(guardar = true): void {
   generacion_voz += 1;
+  preparando_voz = false;
   window.speechSynthesis?.cancel();
-  audio_kokoro?.pause();
-  audio_kokoro = null;
+  reproductor_kokoro.detener();
+  audios_kokoro.clear();
   if (temporizador_avance !== null) window.clearTimeout(temporizador_avance);
   temporizador_avance = null;
   reproduciendo = false;
@@ -418,10 +426,44 @@ function detener_voz(guardar = true): void {
   actualizar_controles();
 }
 
+function solicitar_audio_kokoro(clave: string, texto: string, generacion: number): SolicitudAudioKokoro {
+  const existente = audios_kokoro.get(clave);
+  if (existente) return existente;
+  const solicitud = { promesa: Promise.resolve(null as unknown as AudioBuffer), lista: false };
+  const configuracion = { voz: perfil_actual.voz_base, velocidad: perfil_actual.velocidad, idioma: perfil_actual.idioma_voz };
+  const sintetizar = cadena_sintesis_kokoro.catch(() => undefined).then(async () => {
+    if (generacion !== generacion_voz) throw new Error("Síntesis Kokoro cancelada");
+    const wav = normalizar_binario(await invoke<unknown>("sintetizar_kokoro", { texto, ...configuracion }));
+    return reproductor_kokoro.decodificar(wav);
+  });
+  solicitud.promesa = sintetizar.then((datos) => { solicitud.lista = true; return datos; });
+  cadena_sintesis_kokoro = solicitud.promesa.then(() => undefined, () => undefined);
+  audios_kokoro.set(clave, solicitud);
+  return solicitud;
+}
+
+function preparar_audio_adelantado_kokoro(inicio: number, modo: "continua" | "rsvp", generacion: number): void {
+  for (const indice of indices_locuciones_adelantadas(fragmentos, inicio, CANTIDAD_ADELANTADA_KOKORO)) {
+    const texto = fragmentos[indice]?.locucion;
+    if (texto) solicitar_audio_kokoro(`${modo}:${indice}:0`, texto, generacion);
+  }
+}
+
+function avanzar_fragmento_kokoro(generacion: number): void {
+  if (generacion !== generacion_voz || !reproduciendo) return;
+  const siguiente = indices_locuciones_adelantadas(fragmentos, indice_fragmento + 1, 1)[0];
+  if (siguiente === undefined) { detener_voz(); return; }
+  indice_fragmento = siguiente;
+  indice_unidad_rsvp = 0;
+  guardar_posicion_actual();
+  void reproducir_fragmento_kokoro(generacion);
+}
+
 function reproducir_fragmento(): void {
   if (!fragmentos.length) return;
   detener_voz(false);
   reproduciendo = true;
+  if (perfil_actual.voz_habilitada && perfil_actual.motor_voz === "kokoro_onnx" && isTauri()) reproductor_kokoro.desbloquear();
   if (perfil_actual.modo_lectura === "rsvp") { reproducir_rsvp(); return; }
   if (!perfil_actual.voz_habilitada) { reproducir_sin_voz(); return; }
   if (perfil_actual.motor_voz === "kokoro_onnx" && isTauri()) { void reproducir_fragmento_kokoro(generacion_voz); return; }
@@ -434,25 +476,25 @@ function reproducir_fragmento(): void {
 async function reproducir_fragmento_kokoro(generacion: number): Promise<void> {
   const fragmento = fragmentos[indice_fragmento];
   if (!fragmento || generacion !== generacion_voz || !reproduciendo) return;
-  if (fragmento.locucion === null) { avanzar_fragmento(1, true); return; }
-  actualizar_resaltado();
+  if (fragmento.locucion === null) { avanzar_fragmento_kokoro(generacion); return; }
+  const clave = `continua:${indice_fragmento}:0`;
+  const solicitud = solicitar_audio_kokoro(clave, fragmento.locucion, generacion);
+  preparando_voz = !solicitud.lista;
+  actualizar_controles();
   try {
-    const datos = normalizar_binario(await invoke<unknown>("sintetizar_kokoro", {
-      texto: fragmento.locucion,
-      voz: perfil_actual.voz_base,
-      velocidad: perfil_actual.velocidad,
-      idioma: perfil_actual.idioma_voz,
-    }));
+    const datos = await solicitud.promesa;
+    audios_kokoro.delete(clave);
     if (generacion !== generacion_voz || !reproduciendo) return;
-    const url = URL.createObjectURL(new Blob([datos], { type: "audio/wav" }));
-    const audio = new Audio(url);
-    audio_kokoro = audio;
-    audio.onended = () => { URL.revokeObjectURL(url); audio_kokoro = null; avanzar_fragmento(1, true); };
-    audio.onerror = () => { URL.revokeObjectURL(url); detener_voz(); window.alert("No fue posible reproducir el audio de Kokoro"); };
-    await audio.play();
+    await reproductor_kokoro.reproducir_buffer(datos, () => avanzar_fragmento_kokoro(generacion), () => {
+      if (generacion !== generacion_voz || !reproduciendo) return;
+      actualizar_resaltado();
+      preparar_audio_adelantado_kokoro(indice_fragmento + 1, "continua", generacion);
+    });
   } catch (error) {
     detener_voz();
     window.alert(error instanceof Error ? error.message : String(error));
+  } finally {
+    if (generacion === generacion_voz) { preparando_voz = false; actualizar_controles(); }
   }
 }
 
@@ -488,7 +530,6 @@ function avanzar_unidad_rsvp(): boolean {
 
 function reproducir_rsvp(): void {
   if (!reproduciendo) return;
-  actualizar_visor_rsvp();
   const unidad = obtener_unidades_rsvp()[indice_unidad_rsvp] ?? "";
   const avanzar = (): void => {
     if (!reproduciendo) return;
@@ -497,34 +538,72 @@ function reproducir_rsvp(): void {
   };
   const locucion_permitida = fragmentos[indice_fragmento]?.locucion !== null;
   if (perfil_actual.voz_habilitada && locucion_permitida && perfil_actual.motor_voz === "kokoro_onnx" && isTauri()) {
-    void reproducir_unidad_kokoro(unidad, avanzar, generacion_voz);
+    void reproducir_fragmento_rsvp_kokoro(generacion_voz);
     return;
   }
   if (perfil_actual.voz_habilitada && locucion_permitida && window.speechSynthesis) {
     const locucion = new SpeechSynthesisUtterance(unidad);
-    locucion.lang = "es-ES";
+    locucion.lang = perfil_actual.idioma_voz;
     locucion.rate = perfil_actual.velocidad;
+    locucion.onstart = actualizar_visor_rsvp;
     locucion.onend = avanzar;
     locucion.onerror = () => detener_voz();
     window.speechSynthesis.speak(locucion);
     return;
   }
+  actualizar_visor_rsvp();
   const palabras = Math.max(1, unidad.split(/\s+/u).filter(Boolean).length);
   const pausa = /[.!?…]$/u.test(unidad) ? 1.65 : /[,;:]$/u.test(unidad) ? 1.25 : 1;
   temporizador_avance = window.setTimeout(avanzar, Math.max(80, palabras / perfil_actual.palabras_por_minuto * 60_000 * pausa));
 }
 
-async function reproducir_unidad_kokoro(texto: string, al_terminar: () => void, generacion: number): Promise<void> {
-  try {
-    const datos = normalizar_binario(await invoke<unknown>("sintetizar_kokoro", { texto, voz: perfil_actual.voz_base, velocidad: perfil_actual.velocidad, idioma: perfil_actual.idioma_voz }));
+function programar_plan_rsvp_kokoro(plan: PasoRsvp[], posicion: number, indice_inicial: number, generacion: number): void {
+  const paso = plan[posicion];
+  const anterior = plan[posicion - 1];
+  if (!paso || !anterior) return;
+  temporizador_avance = window.setTimeout(() => {
     if (generacion !== generacion_voz || !reproduciendo) return;
-    const url = URL.createObjectURL(new Blob([datos], { type: "audio/wav" }));
-    const audio = new Audio(url);
-    audio_kokoro = audio;
-    audio.onended = () => { URL.revokeObjectURL(url); audio_kokoro = null; al_terminar(); };
-    audio.onerror = () => { URL.revokeObjectURL(url); detener_voz(); };
-    await audio.play();
+    indice_unidad_rsvp = indice_inicial + paso.indice;
+    actualizar_visor_rsvp();
+    programar_plan_rsvp_kokoro(plan, posicion + 1, indice_inicial, generacion);
+  }, Math.max(0, paso.inicio_ms - anterior.inicio_ms));
+}
+
+async function reproducir_fragmento_rsvp_kokoro(generacion: number): Promise<void> {
+  const fragmento = fragmentos[indice_fragmento];
+  const unidades = obtener_unidades_rsvp();
+  if (!fragmento?.locucion || !unidades.length || generacion !== generacion_voz || !reproduciendo) return;
+  const indice_inicial = indice_unidad_rsvp;
+  const restantes = unidades.slice(indice_inicial);
+  const texto = indice_inicial === 0 ? fragmento.locucion : restantes.join(" ");
+  const clave = `rsvp:${indice_fragmento}:${indice_inicial}`;
+  const solicitud = solicitar_audio_kokoro(clave, texto, generacion);
+  preparando_voz = !solicitud.lista;
+  actualizar_controles();
+  try {
+    const datos = await solicitud.promesa;
+    audios_kokoro.delete(clave);
+    if (generacion !== generacion_voz || !reproduciendo) return;
+    await reproductor_kokoro.reproducir_buffer(datos, () => {
+      if (generacion !== generacion_voz || !reproduciendo) return;
+      if (temporizador_avance !== null) window.clearTimeout(temporizador_avance);
+      temporizador_avance = null;
+      indice_unidad_rsvp = Math.max(0, unidades.length - 1);
+      actualizar_visor_rsvp();
+      if (indice_fragmento >= fragmentos.length - 1) { detener_voz(); return; }
+      indice_fragmento += 1;
+      indice_unidad_rsvp = 0;
+      guardar_posicion_actual();
+      reproducir_rsvp();
+    }, (duracion_segundos) => {
+      if (generacion !== generacion_voz || !reproduciendo) return;
+      actualizar_visor_rsvp();
+      const plan = calcular_plan_rsvp(restantes, duracion_segundos * 1_000);
+      programar_plan_rsvp_kokoro(plan, 1, indice_inicial, generacion);
+      preparar_audio_adelantado_kokoro(indice_fragmento + 1, "rsvp", generacion);
+    });
   } catch (error) { detener_voz(); window.alert(error instanceof Error ? error.message : String(error)); }
+  finally { if (generacion === generacion_voz) { preparando_voz = false; actualizar_controles(); } }
 }
 
 function reproducir_sin_voz(): void {
@@ -573,7 +652,10 @@ function encolar_ventana_tts(generacion: number): void {
   });
 }
 
-function alternar_reproduccion(): void { if (reproduciendo) detener_voz(); else reproducir_fragmento(); }
+function alternar_reproduccion(): void {
+  if (reproduciendo) { detener_voz(); return; }
+  reproducir_fragmento();
+}
 
 function guardar_posicion_actual(forzar = false): void {
   const ahora = performance.now();
@@ -948,11 +1030,33 @@ function actualizar_panel_perfil(): void {
   const velocidad = document.querySelector<HTMLElement>("#valor-velocidad");
   if (tamano) tamano.textContent = `${perfil_actual.tamano_fuente}px`;
   if (velocidad) velocidad.textContent = `${perfil_actual.velocidad.toFixed(1)}×`;
+  const palabras = document.querySelector<HTMLElement>("#valor-palabras-minuto");
+  if (palabras) palabras.textContent = `${perfil_actual.palabras_por_minuto}`;
   document.querySelectorAll<HTMLElement>("[data-solo-rsvp]").forEach((elemento) => { elemento.hidden = perfil_actual.modo_lectura !== "rsvp"; });
   const motor = document.querySelector<HTMLSelectElement>("#motor-voz");
   const opcion_kokoro = motor?.querySelector<HTMLOptionElement>("option[value='kokoro_onnx']");
   if (opcion_kokoro) { opcion_kokoro.disabled = !kokoro_instalado; opcion_kokoro.textContent = `Kokoro ONNX · ${kokoro_instalado ? "verificado" : "no instalado"}`; }
   if (motor) motor.value = perfil_actual.motor_voz;
+  document.querySelectorAll<HTMLElement>("[data-solo-kokoro]").forEach((elemento) => { elemento.hidden = !mostrar_configuracion_kokoro(perfil_actual.motor_voz); });
+  document.querySelectorAll<HTMLElement>("[data-solo-sin-voz]").forEach((elemento) => { elemento.hidden = perfil_actual.voz_habilitada; });
+  document.querySelectorAll<HTMLElement>("[data-solo-con-voz]").forEach((elemento) => { elemento.hidden = !perfil_actual.voz_habilitada; });
+  const idioma = document.querySelector<HTMLSelectElement>("#idioma-voz");
+  const voz = document.querySelector<HTMLSelectElement>("#voz-base");
+  if (idioma) idioma.value = perfil_actual.idioma_voz;
+  if (voz) {
+    const configuracion = normalizar_configuracion_kokoro(perfil_actual.idioma_voz, perfil_actual.voz_base);
+    if (voz.dataset.idioma !== configuracion.idioma) {
+      voz.innerHTML = VOCES_KOKORO[configuracion.idioma]!.map((opcion) => `<option value="${opcion.id}">${opcion.nombre} · ${opcion.id}</option>`).join("");
+      voz.dataset.idioma = configuracion.idioma;
+    }
+    voz.value = configuracion.voz;
+  }
+}
+
+function actualizar_idioma_kokoro(idioma: string): void {
+  const configuracion = normalizar_configuracion_kokoro(idioma, perfil_actual.voz_base);
+  detener_voz();
+  actualizar_perfil({ idioma_voz: configuracion.idioma, voz_base: configuracion.voz });
 }
 
 function sincronizar_controles_colores(): void {
@@ -995,12 +1099,10 @@ function formatear_tamano_bytes(bytes: number): string {
 function crear_tarjeta_repositorio(repositorio: RepositorioVoz): string {
   const paquetes = repositorio.paquetes.map((paquete) => {
     const control = resolver_control_paquete_voz(repositorio, paquete, kokoro_instalado);
-    return `<section><div><strong>${escapar_html(paquete.nombre)}</strong><span>${escapar_html(paquete.idiomas.join(", "))}${paquete.variante ? ` · ${escapar_html(paquete.variante)}` : ""}</span></div><span title="${escapar_html(formatear_tamano_bytes(paquete.tamano_bytes))}">${escapar_html(control.estado)}</span><button ${control.habilitado ? "" : "disabled"} ${control.accion === "vincular_kokoro" ? "data-instalar-kokoro" : ""}>${escapar_html(control.etiqueta)}</button></section>`;
+    const descargas = (paquete.descargas ?? []).map((descarga) => `<button class="descarga-paquete" data-descargar-voz="${escapar_html(descarga.url)}" title="SHA-256: ${descarga.sha256}">${escapar_html(descarga.nombre)} · ${escapar_html(formatear_tamano_bytes(descarga.tamano_bytes))}</button>`).join("");
+    return `<section><div><strong>${escapar_html(paquete.nombre)}</strong>${descargas ? `<div class="descargas-paquete">${descargas}</div>` : ""}</div><button ${control.habilitado ? "" : "disabled"} ${control.accion === "vincular_kokoro" ? "data-instalar-kokoro" : ""}>${escapar_html(control.etiqueta)}</button></section>`;
   }).join("");
-  const puede_usarse = repositorio.motor === "sistema" || repositorio.motor === "kokoro_onnx" && kokoro_instalado;
-  const motor_activo = perfil_actual.motor_voz === repositorio.motor;
-  const detalle_kokoro = repositorio.motor === "kokoro_onnx" && directorio_kokoro ? `<small title="Directorio local de Carlector">${escapar_html(directorio_kokoro)}</small>` : "";
-  return `<article class="tarjeta-repositorio"><header><div><strong>${escapar_html(repositorio.nombre)}</strong><span>${escapar_html(repositorio.motor.replaceAll("_", " "))}</span></div><label class="interruptor-repositorio"><input type="checkbox" data-alternar-repositorio="${escapar_html(repositorio.id)}" ${repositorio.activo ? "checked" : ""}> Activo</label></header><p>${escapar_html(repositorio.descripcion)}</p><button class="boton" data-usar-motor="${repositorio.motor}" ${puede_usarse ? "" : "disabled"}>${motor_activo ? "Motor activo" : "Usar motor"}</button><dl><div><dt>Licencia</dt><dd>${escapar_html(repositorio.licencia)}</dd></div><div><dt>Origen</dt><dd>${repositorio.oficial ? "Oficial" : "Comunitario verificado"}</dd></div></dl><div class="lista-paquetes-voz">${paquetes}</div>${detalle_kokoro || (repositorio.url_proyecto ? `<small>${escapar_html(repositorio.url_proyecto)}</small>` : "")}</article>`;
+  return `<article class="tarjeta-repositorio"><header><strong>${escapar_html(repositorio.nombre)}</strong><label class="interruptor-repositorio"><input type="checkbox" data-alternar-repositorio="${escapar_html(repositorio.id)}" ${repositorio.activo ? "checked" : ""}> Activo</label></header>${paquetes ? `<div class="lista-paquetes-voz">${paquetes}</div>` : ""}</article>`;
 }
 
 async function instalar_paquete_kokoro(): Promise<void> {
@@ -1012,8 +1114,8 @@ async function instalar_paquete_kokoro(): Promise<void> {
   try {
     const estado = await invoke<{ instalado: boolean; directorio: string }>("instalar_kokoro", { rutaModelo: modelo, rutaVoces: voces });
     kokoro_instalado = estado.instalado;
-    directorio_kokoro = estado.directorio;
-    actualizar_perfil({ motor_voz: "kokoro_onnx", idioma_voz: "en-us" });
+    const configuracion = normalizar_configuracion_kokoro(perfil_actual.idioma_voz, perfil_actual.voz_base);
+    actualizar_perfil({ motor_voz: "kokoro_onnx", idioma_voz: configuracion.idioma, voz_base: configuracion.voz });
     renderizar_repositorios_voz();
     window.alert("Kokoro ONNX quedó vinculado y verificado para Carlector.");
   } catch (error) { window.alert(error instanceof Error ? error.message : String(error)); }
@@ -1021,8 +1123,10 @@ async function instalar_paquete_kokoro(): Promise<void> {
 
 function usar_motor_voz(motor: string): void {
   if (motor === "sistema") actualizar_perfil({ motor_voz: "sistema" });
-  if (motor === "kokoro_onnx" && kokoro_instalado) actualizar_perfil({ motor_voz: "kokoro_onnx", idioma_voz: "en-us" });
-  renderizar_repositorios_voz();
+  if (motor === "kokoro_onnx" && kokoro_instalado) {
+    const configuracion = normalizar_configuracion_kokoro(perfil_actual.idioma_voz, perfil_actual.voz_base);
+    actualizar_perfil({ motor_voz: "kokoro_onnx", idioma_voz: configuracion.idioma, voz_base: configuracion.voz });
+  }
 }
 
 function alternar_repositorio_voz(control: HTMLInputElement): void {
@@ -1045,8 +1149,7 @@ async function actualizar_estado_kokoro(): Promise<void> {
   try {
     const estado = await invoke<{ instalado: boolean; directorio: string }>("estado_kokoro");
     kokoro_instalado = estado.instalado;
-    directorio_kokoro = estado.directorio;
-  } catch { kokoro_instalado = false; directorio_kokoro = ""; }
+  } catch { kokoro_instalado = false; }
   actualizar_panel_perfil();
 }
 
@@ -1059,25 +1162,31 @@ function establecer_velocidad(velocidad: number): void {
   if (continuar) reproducir_fragmento();
 }
 
+function establecer_palabras_por_minuto(palabras: number): void {
+  actualizar_perfil({ palabras_por_minuto: palabras });
+  const control = document.querySelector<HTMLInputElement>("#palabras-minuto");
+  if (control) control.value = String(perfil_actual.palabras_por_minuto);
+}
+
 function actualizar_controles(): void {
   const titulo = document.querySelector<HTMLElement>("#documento-actual");
   const estado = document.querySelector<HTMLElement>("#estado-documento");
   const boton = document.querySelector<HTMLElement>("#reproducir");
   if (titulo) titulo.textContent = documento_actual?.titulo ?? "Ningún documento abierto";
-  if (estado) estado.textContent = fragmentos.length ? `Fragmento ${indice_fragmento + 1} de ${fragmentos.length}` : "Biblioteca local";
-  if (boton) { boton.textContent = reproduciendo ? "Ⅱ" : "▶"; boton.setAttribute("aria-label", reproduciendo ? "Pausar" : "Reproducir"); }
+  if (estado) estado.textContent = preparando_voz ? "Preparando voz Kokoro…" : fragmentos.length ? `Fragmento ${indice_fragmento + 1} de ${fragmentos.length}` : "Biblioteca local";
+  if (boton) { boton.textContent = reproduciendo ? "Ⅱ" : "▶"; boton.setAttribute("aria-label", preparando_voz ? "Cancelar preparación de voz" : reproduciendo ? "Pausar" : "Reproducir"); }
 }
 
 function montar_aplicacion(): void {
   const aplicacion = document.querySelector<HTMLElement>("#app");
   if (!aplicacion) return;
-  aplicacion.innerHTML = `<div class="aplicacion"><header class="barra-superior"><div class="marca"><span class="marca-simbolo">C</span><span>${NOMBRE_APLICACION}</span></div>
+  aplicacion.innerHTML = `<div class="aplicacion"><header class="barra-superior"><details class="dedicatoria"><summary>Dedicatoria</summary><p>Creado y dedicado a mi amada mujer Carla Núñez.<br>Con amor,<br>Emile Cid</p></details>
     <nav class="pestanas"><button class="pestana activa" data-vista="biblioteca">Biblioteca</button><button class="pestana" data-vista="lector">Lectura</button></nav>
     <div class="busqueda-global"><input id="busqueda-global" type="search" placeholder="Buscar en la biblioteca" aria-label="Buscar en la vista actual"><span id="estado-busqueda-global" aria-live="polite"></span><button id="busqueda-anterior" aria-label="Resultado anterior">↑</button><button id="busqueda-siguiente" aria-label="Resultado siguiente">↓</button></div>
     <div class="acciones-superiores"><button id="modo-enfoque" class="boton">Modo lectura</button><input id="archivo" class="oculto" type="file" accept=".pdf,.epub" multiple><input id="carpeta" class="oculto" type="file" accept=".pdf,.epub" webkitdirectory multiple></div></header>
     <div class="contenido"><aside id="panel-biblioteca" class="panel"><button id="alternar-panel-biblioteca" class="flecha-panel flecha-panel-izquierda" aria-label="Ocultar biblioteca">‹</button><div class="panel-contenido"><div class="pestanas-panel"><button class="activo" data-pestana-izquierda="biblioteca">Biblioteca</button><button data-pestana-izquierda="indice">Índice</button></div><div id="contenido-biblioteca"><section class="panel-seccion"><div class="encabezado-panel"><h2 class="panel-titulo">Organización</h2><button id="abrir-menu-agregar" class="agregar-biblioteca" aria-label="Añadir a biblioteca" title="Añadir a biblioteca">+</button></div><nav id="navegacion-biblioteca" class="navegacion"></nav></section>
     <section class="panel-seccion"><h2 class="panel-titulo">Carpetas</h2><nav id="carpetas-biblioteca" class="navegacion"></nav></section></div><section id="contenido-indice" class="panel-seccion" hidden></section>
-    </div></aside><section id="vista-principal" class="vista-principal"></section><aside id="panel-inspector" class="panel panel-derecho"><button id="alternar-panel-inspector" class="flecha-panel flecha-panel-derecha" aria-label="Ocultar configuración">›</button><div class="panel-contenido"><div class="pestanas-panel"><button class="activo" data-pestana-derecha="perfil">Configuración</button><button data-pestana-derecha="fragmentos">Fragmentos</button></div><div id="contenido-perfil"><section class="panel-seccion"><h2 class="panel-titulo">Apariencia</h2>
+    </div></aside><section id="vista-principal" class="vista-principal"></section><aside id="panel-inspector" class="panel panel-derecho"><button id="alternar-panel-inspector" class="flecha-panel flecha-panel-derecha" aria-label="Ocultar configuración">›</button><div class="panel-contenido"><div class="pestanas-panel"><button class="activo" data-pestana-derecha="perfil">Configuración</button><button data-pestana-derecha="fragmentos">Fragmentos</button></div><div id="contenido-perfil"><details class="panel-seccion grupo-configuracion" open><summary>Apariencia</summary><div class="contenido-grupo-configuracion">
     <div class="campo"><div class="encabezado-campo"><label>Temas</label><button id="abrir-biblioteca-temas" class="boton-biblioteca-temas" aria-label="Abrir biblioteca de temas" title="Biblioteca de temas">▦</button></div><div class="temas-predefinidos"><button data-tema-preset="diurno">Diurno</button><button data-tema-preset="nocturno">Nocturno</button><button data-tema-preset="sepia">Sepia</button><button data-tema-preset="contraste">Contraste</button></div></div>
     <div class="campo"><label>Colores personalizados</label><div class="colores-personalizados">${Object.entries(perfil_actual.colores).map(([nombre, valor]) => `<label>${nombre}<input type="color" data-color-interfaz="${nombre}" value="${valor}"></label>`).join("")}</div></div>
     <div class="campo"><div class="campo-linea"><label for="tamano">Tamaño</label><span id="valor-tamano"></span></div><input id="tamano" type="range" min="12" max="40" value="${perfil_actual.tamano_fuente}"></div>
@@ -1087,11 +1196,11 @@ function montar_aplicacion(): void {
     <div class="campo" data-solo-rsvp><label for="unidad-rsvp">Unidad RSVP</label><select id="unidad-rsvp"><option value="palabra">Una palabra</option><option value="frase_corta">Frase corta</option></select></div>
     <div class="campo" data-solo-rsvp><label for="palabras-rsvp">Palabras por frase RSVP</label><input id="palabras-rsvp" type="number" min="1" max="8" value="${perfil_actual.palabras_rsvp}"></div>
     <div class="campo"><label for="matematica">Matemática en voz</label><select id="matematica"><option value="leer">Leer</option><option value="omitir">Omitir</option><option value="indicar">Decir «ecuación»</option></select></div>
-    <div class="campo campo-linea"><label for="auto-scroll">Auto-scroll</label><input id="auto-scroll" class="interruptor" type="checkbox"></div></section>
-    <section class="panel-seccion"><div class="encabezado-campo"><h2 class="panel-titulo">Voz</h2><button id="abrir-repositorios-voz" class="boton-biblioteca-temas" aria-label="Administrar repositorios de voz" title="Repositorios de voz">⬡</button></div><div class="campo campo-linea"><label for="voz-habilitada">Voz habilitada</label><input id="voz-habilitada" class="interruptor" type="checkbox"></div><div class="campo"><label for="motor-voz">Motor</label><select id="motor-voz"><option value="sistema">TTS del sistema · experimental</option><option value="kokoro_onnx" ${kokoro_instalado ? "" : "disabled"}>Kokoro ONNX${kokoro_instalado ? " · verificado" : " · no instalado"}</option></select></div><div class="campo"><label for="palabras-minuto">Velocidad visual · palabras/min</label><input id="palabras-minuto" type="number" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto}"></div><p class="ayuda-campo">Motores y paquetes se administran desde el botón ⬡.</p></section></div><section id="contenido-fragmentos" class="panel-seccion" hidden></section></div></aside></div>
-    <div id="menu-agregar" class="menu-agregar" hidden><button id="anadir-archivo">Añadir archivo</button><button id="anadir-carpeta">Añadir carpeta del sistema</button><button id="crear-carpeta">Crear carpeta virtual</button></div><div id="menu-contextual" class="menu-agregar menu-contextual" hidden></div><section id="biblioteca-temas" class="modal-temas" hidden><div class="dialogo-temas"><header><div><h2>Biblioteca de temas</h2><p>Paletas locales para lectura e interfaz</p></div><button id="cerrar-biblioteca-temas" aria-label="Cerrar">×</button></header><div id="lista-biblioteca-temas" class="lista-biblioteca-temas"></div><footer><button id="guardar-tema-actual" class="boton primario">Guardar tema actual</button></footer></div></section><section id="repositorios-voz" class="modal-temas" hidden><div class="dialogo-temas dialogo-repositorios"><header><div><h2>Repositorios de voz</h2><p>Una biblioteca Python no incluye necesariamente modelo ni voces. Vincula ambos archivos para usarlos en Carlector.</p></div><button id="cerrar-repositorios-voz" aria-label="Cerrar">×</button></header><div id="lista-repositorios-voz" class="lista-repositorios-voz"></div><footer><span>Los paquetes permanecen locales y se verifican al vincularlos.</span><button id="actualizar-estado-voz" class="boton">Comprobar estado</button></footer></div></section>
+    <div class="campo campo-linea"><label for="auto-scroll">Auto-scroll</label><input id="auto-scroll" class="interruptor" type="checkbox"></div></div></details>
+    <details class="panel-seccion grupo-configuracion" open><summary><span>Voz</span><button id="abrir-repositorios-voz" class="boton-biblioteca-temas" aria-label="Administrar repositorios de voz" title="Repositorios de voz">⬡</button></summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea campo-voz-habilitada"><label for="voz-habilitada">Voz habilitada</label><input id="voz-habilitada" class="interruptor" type="checkbox"></div><div class="campo"><label for="motor-voz">Motor</label><select id="motor-voz"><option value="sistema">TTS del sistema · experimental</option><option value="kokoro_onnx" ${kokoro_instalado ? "" : "disabled"}>Kokoro ONNX${kokoro_instalado ? " · verificado" : " · no instalado"}</option></select></div><div class="campo" data-solo-kokoro><label for="idioma-voz">Paquete de idioma</label><select id="idioma-voz"><option value="es">Español genérico</option><option value="en-us">Inglés · Estados Unidos</option><option value="en-gb">Inglés · Reino Unido</option></select></div><div class="campo" data-solo-kokoro><label for="voz-base">Voz compatible</label><select id="voz-base"></select></div><div class="control-velocidad-voz" data-solo-con-voz><label>Velocidad de reproducción</label><div class="velocidad-linea"><button id="velocidad-menos" class="velocidad-ajuste" aria-label="Reducir velocidad en 0.1">−</button><input id="velocidad" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.velocidad}"><button id="velocidad-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad en 0.1">+</button><span id="valor-velocidad"></span></div><div class="velocidades-rapidas"><button data-velocidad="1">1×</button><button data-velocidad="1.5">1.5×</button><button data-velocidad="2">2×</button></div></div><p class="ayuda-campo" data-solo-kokoro>Idioma y voz se sincronizan automáticamente para evitar combinaciones incompatibles.</p></div></details></div><section id="contenido-fragmentos" class="panel-seccion" hidden></section></div></aside></div>
+    <div id="menu-agregar" class="menu-agregar" hidden><button id="anadir-archivo">Añadir archivo</button><button id="anadir-carpeta">Añadir carpeta del sistema</button><button id="crear-carpeta">Crear carpeta virtual</button></div><div id="menu-contextual" class="menu-agregar menu-contextual" hidden></div><section id="biblioteca-temas" class="modal-temas" hidden><div class="dialogo-temas"><header><div><h2>Biblioteca de temas</h2><p>Paletas locales para lectura e interfaz</p></div><button id="cerrar-biblioteca-temas" aria-label="Cerrar">×</button></header><div id="lista-biblioteca-temas" class="lista-biblioteca-temas"></div><footer><button id="guardar-tema-actual" class="boton primario">Guardar tema actual</button></footer></div></section><section id="repositorios-voz" class="modal-temas" hidden><div class="dialogo-temas dialogo-repositorios"><header><h2>Repositorios de voz</h2><button id="cerrar-repositorios-voz" aria-label="Cerrar">×</button></header><div id="lista-repositorios-voz" class="lista-repositorios-voz"></div><footer><button id="actualizar-estado-voz" class="boton">Comprobar estado</button></footer></div></section>
     <section id="carga-importacion" class="carga-importacion" role="status" aria-live="polite" hidden><strong>Cargando biblioteca</strong><span id="carga-nombre"></span><progress id="carga-progreso" max="100"></progress><small id="carga-estado"></small></section>
-    <footer class="control-inferior"><div class="control-documento"><strong id="documento-actual"></strong><span id="estado-documento"></span></div><div class="reproductor"><button id="anterior" class="boton-icono" aria-label="Fragmento anterior">←</button><button id="reproducir" class="reproducir" aria-label="Reproducir" title="Reproducir o pausar · Space / K">▶</button><button id="siguiente" class="boton-icono" aria-label="Fragmento siguiente">→</button></div><div class="control-velocidad"><div class="velocidad-linea"><button id="velocidad-menos" class="velocidad-ajuste" aria-label="Reducir velocidad en 0.1">−</button><input id="velocidad" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.velocidad}"><button id="velocidad-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad en 0.1">+</button><span id="valor-velocidad"></span></div><div class="velocidades-rapidas"><button data-velocidad="1">1×</button><button data-velocidad="1.5">1.5×</button><button data-velocidad="2">2×</button></div></div></footer></div>`;
+    <footer class="control-inferior"><div class="control-documento"><strong id="documento-actual"></strong><span id="estado-documento"></span></div><div class="reproductor"><button id="anterior" class="boton-icono" aria-label="Fragmento anterior">←</button><button id="reproducir" class="reproducir" aria-label="Reproducir" title="Reproducir o pausar · Space">▶</button><button id="siguiente" class="boton-icono" aria-label="Fragmento siguiente">→</button></div><div class="control-velocidad" data-solo-sin-voz><div class="velocidad-linea"><button id="palabras-menos" class="velocidad-ajuste" aria-label="Reducir palabras por minuto">−</button><input id="palabras-minuto" type="range" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto}"><button id="palabras-mas" class="velocidad-ajuste" aria-label="Aumentar palabras por minuto">+</button><span id="valor-palabras-minuto"></span></div><div class="velocidades-rapidas"><button data-palabras-minuto="200">200</button><button data-palabras-minuto="300">300</button><button data-palabras-minuto="450">450</button></div></div></footer></div>`;
 
   document.querySelectorAll<HTMLElement>("[data-vista]").forEach((boton) => boton.addEventListener("click", () => cambiar_vista(boton.dataset.vista as "biblioteca" | "lector")));
   document.querySelector<HTMLInputElement>("#busqueda-global")?.addEventListener("input", (evento) => actualizar_busqueda_diferida((evento.currentTarget as HTMLInputElement).value));
@@ -1175,9 +1284,9 @@ function montar_aplicacion(): void {
   document.querySelector("#repositorios-voz")?.addEventListener("click", (evento) => {
     if (evento.target === evento.currentTarget) { (evento.currentTarget as HTMLElement).hidden = true; return; }
     const objetivo = evento.target instanceof Element ? evento.target : null;
+    const descarga = objetivo?.closest<HTMLElement>("[data-descargar-voz]")?.dataset.descargarVoz;
+    if (descarga) { void openUrl(descarga).catch((error) => window.alert(error instanceof Error ? error.message : String(error))); return; }
     if (objetivo?.closest("[data-instalar-kokoro]")) { void instalar_paquete_kokoro(); return; }
-    const boton_motor = objetivo?.closest<HTMLElement>("[data-usar-motor]");
-    if (boton_motor) usar_motor_voz(boton_motor.dataset.usarMotor ?? "");
   });
   document.querySelector("#repositorios-voz")?.addEventListener("change", (evento) => {
     const control = evento.target instanceof HTMLInputElement ? evento.target.closest<HTMLInputElement>("[data-alternar-repositorio]") : null;
@@ -1198,8 +1307,13 @@ function montar_aplicacion(): void {
   document.querySelector<HTMLSelectElement>("#unidad-rsvp")?.addEventListener("change", (evento) => actualizar_perfil({ unidad_rsvp: (evento.currentTarget as HTMLSelectElement).value as PerfilLectura["unidad_rsvp"] }));
   document.querySelector<HTMLInputElement>("#palabras-rsvp")?.addEventListener("change", (evento) => actualizar_perfil({ palabras_rsvp: Number((evento.currentTarget as HTMLInputElement).value) }));
   document.querySelector<HTMLInputElement>("#voz-habilitada")?.addEventListener("change", (evento) => { const continuar = reproduciendo; detener_voz(); actualizar_perfil({ voz_habilitada: (evento.currentTarget as HTMLInputElement).checked }); if (continuar) reproducir_fragmento(); });
-  document.querySelector<HTMLSelectElement>("#motor-voz")?.addEventListener("change", (evento) => actualizar_perfil({ motor_voz: (evento.currentTarget as HTMLSelectElement).value as PerfilLectura["motor_voz"] }));
-  document.querySelector<HTMLInputElement>("#palabras-minuto")?.addEventListener("change", (evento) => actualizar_perfil({ palabras_por_minuto: Number((evento.currentTarget as HTMLInputElement).value) }));
+  document.querySelector<HTMLSelectElement>("#motor-voz")?.addEventListener("change", (evento) => usar_motor_voz((evento.currentTarget as HTMLSelectElement).value));
+  document.querySelector<HTMLSelectElement>("#idioma-voz")?.addEventListener("change", (evento) => actualizar_idioma_kokoro((evento.currentTarget as HTMLSelectElement).value));
+  document.querySelector<HTMLSelectElement>("#voz-base")?.addEventListener("change", (evento) => { detener_voz(); actualizar_perfil({ voz_base: (evento.currentTarget as HTMLSelectElement).value }); });
+  document.querySelector<HTMLInputElement>("#palabras-minuto")?.addEventListener("input", (evento) => establecer_palabras_por_minuto(Number((evento.currentTarget as HTMLInputElement).value)));
+  document.querySelector("#palabras-menos")?.addEventListener("click", () => establecer_palabras_por_minuto(ajustar_palabras_por_minuto(perfil_actual.palabras_por_minuto, -10)));
+  document.querySelector("#palabras-mas")?.addEventListener("click", () => establecer_palabras_por_minuto(ajustar_palabras_por_minuto(perfil_actual.palabras_por_minuto, 10)));
+  document.querySelectorAll<HTMLButtonElement>("[data-palabras-minuto]").forEach((boton) => boton.addEventListener("click", () => establecer_palabras_por_minuto(Number(boton.dataset.palabrasMinuto))));
   document.querySelector<HTMLInputElement>("#velocidad")?.addEventListener("input", (evento) => establecer_velocidad(Number((evento.currentTarget as HTMLInputElement).value)));
   document.querySelector("#velocidad-menos")?.addEventListener("click", () => establecer_velocidad(ajustar_velocidad(perfil_actual.velocidad, -0.1)));
   document.querySelector("#velocidad-mas")?.addEventListener("click", () => establecer_velocidad(ajustar_velocidad(perfil_actual.velocidad, 0.1)));
@@ -1232,7 +1346,7 @@ function montar_aplicacion(): void {
       return;
     }
     const objetivo = evento.target instanceof HTMLElement ? evento.target : null;
-    if (!es_atajo_reproduccion({ code: evento.code, etiqueta_objetivo: objetivo?.tagName ?? "BODY", editable: objetivo?.isContentEditable })) return;
+    if (!es_atajo_reproduccion({ code: evento.code, etiqueta_objetivo: objetivo?.tagName ?? "BODY", editable: objetivo?.isContentEditable, repeticion: evento.repeat })) return;
     evento.preventDefault(); alternar_reproduccion();
   });
   enlazar_eventos_biblioteca();

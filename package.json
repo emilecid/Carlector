@@ -11,6 +11,7 @@
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "^2.4.0",
+    "@tauri-apps/plugin-opener": "^2.5.4",
     "dompurify": "^3.2.6",
     "epubjs": "^0.3.93",
     "pdfjs-dist": "4.10.38"
@@ -18,8 +19,10 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.4",
     "@types/node": "^26.2.0",
+    "jsdom": "^30.0.1",
     "typescript": "^5.9.2",
-    "vite": "^7.1.2"
+    "vite": "^7.1.2",
+    "vitest": "^3.2.7"
   },
   "packageManager": "pnpm@10.15.0"
 }

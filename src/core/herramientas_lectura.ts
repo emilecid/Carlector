@@ -4,11 +4,11 @@ export interface ContextoAtajoReproduccion {
   code: string;
   etiqueta_objetivo: string;
   editable?: boolean;
+  repeticion?: boolean;
 }
 
 export function es_atajo_reproduccion(contexto: ContextoAtajoReproduccion): boolean {
-  if (contexto.editable || ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(contexto.etiqueta_objetivo.toUpperCase())) return false;
-  return contexto.code === "Space" || contexto.code === "KeyK" || contexto.code === "MediaPlayPause";
+  return contexto.code === "Space" && contexto.repeticion !== true;
 }
 
 export function resolver_destino_indice(fragmentos: FragmentoLectura[], texto_objetivo: string): number | null {
