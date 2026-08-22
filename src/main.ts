@@ -6,6 +6,8 @@ import { convertir_bloques_a_texto, type DocumentoProcesado } from "./core/docum
 import type { CarpetaBiblioteca, DocumentoBiblioteca, FragmentoGuardado, FragmentoLectura, PerfilLectura, PoliticaMatematica } from "./core/modelos.ts";
 import { debe_guardar_progreso, es_atajo_reproduccion, fragmento_esta_destacado, resolver_destino_indice } from "./core/herramientas_lectura.ts";
 import { resolver_indice_fragmento } from "./core/navegacion_lector.ts";
+import { calcular_posicion_superpuesta, crear_ejecutor_diferido } from "./core/interfaz.ts";
+import { resolver_control_paquete_voz } from "./core/interfaz_voz.ts";
 import { NOMBRE_APLICACION } from "./core/marca.ts";
 import { ajustar_velocidad, clases_visibilidad_paneles, PERFIL_PREDETERMINADO, TEMAS_PREDEFINIDOS, normalizar_perfil } from "./core/perfiles.ts";
 import { segmentar_bloques, segmentar_texto } from "./core/segmentacion.ts";
@@ -36,6 +38,7 @@ let temas_personalizados = persistencia.temasPersonalizados();
 let estados_repositorios_voz = persistencia.repositoriosVoz();
 let repositorios_voz = combinar_estado_repositorios(estados_repositorios_voz);
 let kokoro_instalado = false;
+let directorio_kokoro = "";
 let fragmentos_guardados: FragmentoGuardado[] = persistencia.fragmentos();
 let filtro_biblioteca: FiltroBiblioteca = { tipo: "todos" };
 let consulta_biblioteca = "";
@@ -50,7 +53,7 @@ const documentos_procesados = new Map<string, DocumentoProcesado>();
 const TAMANO_VENTANA_TTS = 12;
 const UMBRAL_RECARGA_TTS = 4;
 const TAMANO_LOTE_RENDERIZADO = 320;
-const TAMANO_VENTANA_DOM = 1_200;
+const TAMANO_VENTANA_DOM = 600;
 const VERSION_CACHE_DOCUMENTO = 3;
 let indice_resaltado_anterior = -1;
 let ultimo_guardado_progreso = 0;
@@ -113,37 +116,60 @@ function renderizar_biblioteca(consulta = consulta_biblioteca): void {
   const resultados = buscar_documentos(filtrar_documentos(documentos, filtro_biblioteca), consulta);
   const principal = document.querySelector<HTMLElement>("#vista-principal");
   if (!principal) return;
-  principal.innerHTML = `<section class="biblioteca"><header class="cabecera-vista">
+  const contenido = `<header class="cabecera-vista">
     <div><h1>Tu biblioteca</h1><p>${resultados.length} documentos · todo permanece en este equipo</p></div>
-    </header><div class="cuadricula">${resultados.map(crear_portada).join("")}</div></section>`;
-  principal.querySelectorAll<HTMLElement>("[data-documento]").forEach((elemento) => {
-    elemento.addEventListener("click", () => void abrir_documento(elemento.dataset.documento ?? ""));
-    elemento.addEventListener("contextmenu", (evento) => {
-      evento.preventDefault();
-      abrir_menu_documento(elemento.dataset.documento ?? "", evento.clientX, evento.clientY);
-    });
-    elemento.addEventListener("dragstart", (evento) => evento.dataTransfer?.setData("text/carlector-documento", elemento.dataset.documento ?? ""));
-    elemento.addEventListener("dragover", (evento) => evento.preventDefault());
-    elemento.addEventListener("drop", (evento) => {
-      evento.preventDefault();
-      const id_movido = evento.dataTransfer?.getData("text/carlector-documento") ?? "";
-      if (id_movido) void ordenar_documento(id_movido, elemento.dataset.documento ?? "");
-    });
+    </header><div class="cuadricula">${resultados.map(crear_portada).join("")}</div>`;
+  const biblioteca = principal.querySelector<HTMLElement>(".biblioteca");
+  if (biblioteca) biblioteca.innerHTML = contenido;
+  else principal.innerHTML = `<section class="biblioteca">${contenido}</section>`;
+}
+
+function obtener_tarjeta_documento(objetivo: EventTarget | null): HTMLElement | null {
+  return objetivo instanceof Element ? objetivo.closest<HTMLElement>("[data-documento]") : null;
+}
+
+function enlazar_eventos_biblioteca(): void {
+  const principal = document.querySelector<HTMLElement>("#vista-principal");
+  if (!principal) return;
+  principal.addEventListener("click", (evento) => {
+    const tarjeta = obtener_tarjeta_documento(evento.target);
+    if (tarjeta) void abrir_documento(tarjeta.dataset.documento ?? "");
+  });
+  principal.addEventListener("contextmenu", (evento) => {
+    const tarjeta = obtener_tarjeta_documento(evento.target);
+    if (!tarjeta) return;
+    evento.preventDefault();
+    abrir_menu_documento(tarjeta.dataset.documento ?? "", evento.clientX, evento.clientY);
+  });
+  principal.addEventListener("dragstart", (evento) => {
+    const tarjeta = obtener_tarjeta_documento(evento.target);
+    if (tarjeta) evento.dataTransfer?.setData("text/carlector-documento", tarjeta.dataset.documento ?? "");
+  });
+  principal.addEventListener("dragover", (evento) => { if (obtener_tarjeta_documento(evento.target)) evento.preventDefault(); });
+  principal.addEventListener("drop", (evento) => {
+    const tarjeta = obtener_tarjeta_documento(evento.target);
+    if (!tarjeta) return;
+    evento.preventDefault();
+    const id_movido = evento.dataTransfer?.getData("text/carlector-documento") ?? "";
+    if (id_movido) void ordenar_documento(id_movido, tarjeta.dataset.documento ?? "");
   });
 }
 
 function actualizar_indicador_busqueda(): void {
   const indicador = document.querySelector<HTMLElement>("#estado-busqueda-global");
   if (!indicador) return;
-  if (!consulta_global.trim()) { indicador.textContent = ""; return; }
+  const botones = document.querySelectorAll<HTMLButtonElement>("#busqueda-anterior, #busqueda-siguiente");
+  if (!consulta_global.trim()) { indicador.textContent = ""; botones.forEach((boton) => { boton.hidden = true; }); return; }
   if (vista_actual === "biblioteca") {
     const cantidad = buscar_documentos(filtrar_documentos(documentos, filtro_biblioteca), consulta_global).length;
     indicador.textContent = `${cantidad} resultado${cantidad === 1 ? "" : "s"}`;
+    botones.forEach((boton) => { boton.hidden = true; });
     return;
   }
   indicador.textContent = resultados_busqueda_lector.length
     ? `${posicion_resultado_busqueda + 1}/${resultados_busqueda_lector.length}`
     : "Sin resultados";
+  botones.forEach((boton) => { boton.hidden = resultados_busqueda_lector.length === 0; });
 }
 
 function actualizar_busqueda_global(consulta: string): void {
@@ -159,6 +185,8 @@ function actualizar_busqueda_global(consulta: string): void {
   if (primer_resultado !== undefined) mover_lector_a_fragmento(primer_resultado);
   actualizar_indicador_busqueda();
 }
+
+const actualizar_busqueda_diferida = crear_ejecutor_diferido(actualizar_busqueda_global, 150);
 
 function mover_resultado_busqueda(direccion: number): void {
   if (!resultados_busqueda_lector.length) return;
@@ -637,13 +665,19 @@ function cerrar_menus_contextuales(): void {
   document.querySelector<HTMLElement>("#menu-contextual")?.setAttribute("hidden", "");
 }
 
+function posicionar_superposicion(menu: HTMLElement, ancla: { izquierda: number; superior: number; derecha: number; inferior: number }): void {
+  const rectangulo = menu.getBoundingClientRect();
+  const posicion = calcular_posicion_superpuesta(ancla, { ancho: rectangulo.width, alto: rectangulo.height }, { ancho: window.innerWidth, alto: window.innerHeight });
+  menu.style.left = `${posicion.izquierda}px`;
+  menu.style.top = `${posicion.superior}px`;
+}
+
 function mostrar_menu_contextual(contenido: string, x: number, y: number): HTMLElement | null {
   const menu = document.querySelector<HTMLElement>("#menu-contextual");
   if (!menu) return null;
   menu.innerHTML = contenido;
   menu.hidden = false;
-  menu.style.left = `${Math.min(x, window.innerWidth - 220)}px`;
-  menu.style.top = `${Math.min(y, window.innerHeight - 210)}px`;
+  posicionar_superposicion(menu, { izquierda: x, superior: y, derecha: x, inferior: y });
   return menu;
 }
 
@@ -914,6 +948,11 @@ function actualizar_panel_perfil(): void {
   const velocidad = document.querySelector<HTMLElement>("#valor-velocidad");
   if (tamano) tamano.textContent = `${perfil_actual.tamano_fuente}px`;
   if (velocidad) velocidad.textContent = `${perfil_actual.velocidad.toFixed(1)}×`;
+  document.querySelectorAll<HTMLElement>("[data-solo-rsvp]").forEach((elemento) => { elemento.hidden = perfil_actual.modo_lectura !== "rsvp"; });
+  const motor = document.querySelector<HTMLSelectElement>("#motor-voz");
+  const opcion_kokoro = motor?.querySelector<HTMLOptionElement>("option[value='kokoro_onnx']");
+  if (opcion_kokoro) { opcion_kokoro.disabled = !kokoro_instalado; opcion_kokoro.textContent = `Kokoro ONNX · ${kokoro_instalado ? "verificado" : "no instalado"}`; }
+  if (motor) motor.value = perfil_actual.motor_voz;
 }
 
 function sincronizar_controles_colores(): void {
@@ -955,14 +994,13 @@ function formatear_tamano_bytes(bytes: number): string {
 
 function crear_tarjeta_repositorio(repositorio: RepositorioVoz): string {
   const paquetes = repositorio.paquetes.map((paquete) => {
-    const es_kokoro = repositorio.motor === "kokoro_onnx";
-    const estado = es_kokoro && kokoro_instalado ? "Instalado y verificado" : formatear_tamano_bytes(paquete.tamano_bytes);
-    const etiqueta = es_kokoro && kokoro_instalado ? "Reparar" : paquete.instalable ? "Instalar" : "Pendiente de verificación";
-    return `<section><div><strong>${escapar_html(paquete.nombre)}</strong><span>${escapar_html(paquete.idiomas.join(", "))}${paquete.variante ? ` · ${escapar_html(paquete.variante)}` : ""}</span></div><span>${estado}</span><button ${paquete.instalable && repositorio.activo ? "" : "disabled"} ${es_kokoro ? "data-instalar-kokoro" : ""}>${etiqueta}</button></section>`;
+    const control = resolver_control_paquete_voz(repositorio, paquete, kokoro_instalado);
+    return `<section><div><strong>${escapar_html(paquete.nombre)}</strong><span>${escapar_html(paquete.idiomas.join(", "))}${paquete.variante ? ` · ${escapar_html(paquete.variante)}` : ""}</span></div><span title="${escapar_html(formatear_tamano_bytes(paquete.tamano_bytes))}">${escapar_html(control.estado)}</span><button ${control.habilitado ? "" : "disabled"} ${control.accion === "vincular_kokoro" ? "data-instalar-kokoro" : ""}>${escapar_html(control.etiqueta)}</button></section>`;
   }).join("");
   const puede_usarse = repositorio.motor === "sistema" || repositorio.motor === "kokoro_onnx" && kokoro_instalado;
   const motor_activo = perfil_actual.motor_voz === repositorio.motor;
-  return `<article class="tarjeta-repositorio"><header><div><strong>${escapar_html(repositorio.nombre)}</strong><span>${escapar_html(repositorio.motor.replaceAll("_", " "))}</span></div><label class="interruptor-repositorio"><input type="checkbox" data-alternar-repositorio="${escapar_html(repositorio.id)}" ${repositorio.activo ? "checked" : ""}> Activo</label></header><p>${escapar_html(repositorio.descripcion)}</p><button class="boton" data-usar-motor="${repositorio.motor}" ${puede_usarse ? "" : "disabled"}>${motor_activo ? "Motor activo" : "Usar motor"}</button><dl><div><dt>Licencia</dt><dd>${escapar_html(repositorio.licencia)}</dd></div><div><dt>Origen</dt><dd>${repositorio.oficial ? "Oficial" : "Comunitario verificado"}</dd></div></dl><div class="lista-paquetes-voz">${paquetes}</div>${repositorio.url_proyecto ? `<small>${escapar_html(repositorio.url_proyecto)}</small>` : ""}</article>`;
+  const detalle_kokoro = repositorio.motor === "kokoro_onnx" && directorio_kokoro ? `<small title="Directorio local de Carlector">${escapar_html(directorio_kokoro)}</small>` : "";
+  return `<article class="tarjeta-repositorio"><header><div><strong>${escapar_html(repositorio.nombre)}</strong><span>${escapar_html(repositorio.motor.replaceAll("_", " "))}</span></div><label class="interruptor-repositorio"><input type="checkbox" data-alternar-repositorio="${escapar_html(repositorio.id)}" ${repositorio.activo ? "checked" : ""}> Activo</label></header><p>${escapar_html(repositorio.descripcion)}</p><button class="boton" data-usar-motor="${repositorio.motor}" ${puede_usarse ? "" : "disabled"}>${motor_activo ? "Motor activo" : "Usar motor"}</button><dl><div><dt>Licencia</dt><dd>${escapar_html(repositorio.licencia)}</dd></div><div><dt>Origen</dt><dd>${repositorio.oficial ? "Oficial" : "Comunitario verificado"}</dd></div></dl><div class="lista-paquetes-voz">${paquetes}</div>${detalle_kokoro || (repositorio.url_proyecto ? `<small>${escapar_html(repositorio.url_proyecto)}</small>` : "")}</article>`;
 }
 
 async function instalar_paquete_kokoro(): Promise<void> {
@@ -972,11 +1010,27 @@ async function instalar_paquete_kokoro(): Promise<void> {
   const voces = await open({ multiple: false, filters: [{ name: "Voces Kokoro", extensions: ["bin"] }] });
   if (typeof voces !== "string") return;
   try {
-    const estado = await invoke<{ instalado: boolean }>("instalar_kokoro", { rutaModelo: modelo, rutaVoces: voces });
+    const estado = await invoke<{ instalado: boolean; directorio: string }>("instalar_kokoro", { rutaModelo: modelo, rutaVoces: voces });
     kokoro_instalado = estado.instalado;
+    directorio_kokoro = estado.directorio;
     actualizar_perfil({ motor_voz: "kokoro_onnx", idioma_voz: "en-us" });
     renderizar_repositorios_voz();
+    window.alert("Kokoro ONNX quedó vinculado y verificado para Carlector.");
   } catch (error) { window.alert(error instanceof Error ? error.message : String(error)); }
+}
+
+function usar_motor_voz(motor: string): void {
+  if (motor === "sistema") actualizar_perfil({ motor_voz: "sistema" });
+  if (motor === "kokoro_onnx" && kokoro_instalado) actualizar_perfil({ motor_voz: "kokoro_onnx", idioma_voz: "en-us" });
+  renderizar_repositorios_voz();
+}
+
+function alternar_repositorio_voz(control: HTMLInputElement): void {
+  const id = control.dataset.alternarRepositorio;
+  if (!id) return;
+  estados_repositorios_voz = { ...estados_repositorios_voz, [id]: control.checked };
+  persistencia.guardarRepositoriosVoz(estados_repositorios_voz);
+  renderizar_repositorios_voz();
 }
 
 function renderizar_repositorios_voz(): void {
@@ -984,24 +1038,16 @@ function renderizar_repositorios_voz(): void {
   if (!lista) return;
   repositorios_voz = combinar_estado_repositorios(estados_repositorios_voz);
   lista.innerHTML = repositorios_voz.map(crear_tarjeta_repositorio).join("");
-  lista.querySelectorAll<HTMLInputElement>("[data-alternar-repositorio]").forEach((control) => control.addEventListener("change", () => {
-    estados_repositorios_voz = { ...estados_repositorios_voz, [control.dataset.alternarRepositorio ?? ""]: control.checked };
-    persistencia.guardarRepositoriosVoz(estados_repositorios_voz);
-    renderizar_repositorios_voz();
-  }));
-  lista.querySelector("[data-instalar-kokoro]")?.addEventListener("click", () => void instalar_paquete_kokoro());
-  lista.querySelectorAll<HTMLElement>("[data-usar-motor]").forEach((boton) => boton.addEventListener("click", () => {
-    const motor = boton.dataset.usarMotor;
-    if (motor === "sistema") actualizar_perfil({ motor_voz: "sistema" });
-    if (motor === "kokoro_onnx" && kokoro_instalado) actualizar_perfil({ motor_voz: "kokoro_onnx", idioma_voz: "en-us" });
-    renderizar_repositorios_voz();
-  }));
 }
 
 async function actualizar_estado_kokoro(): Promise<void> {
   if (!isTauri()) return;
-  try { kokoro_instalado = (await invoke<{ instalado: boolean }>("estado_kokoro")).instalado; }
-  catch { kokoro_instalado = false; }
+  try {
+    const estado = await invoke<{ instalado: boolean; directorio: string }>("estado_kokoro");
+    kokoro_instalado = estado.instalado;
+    directorio_kokoro = estado.directorio;
+  } catch { kokoro_instalado = false; directorio_kokoro = ""; }
+  actualizar_panel_perfil();
 }
 
 function establecer_velocidad(velocidad: number): void {
@@ -1038,20 +1084,29 @@ function montar_aplicacion(): void {
     <div class="campo"><label for="modo-lectura-selector">Presentación</label><select id="modo-lectura-selector"><option value="continua">Lectura continua</option><option value="rsvp">RSVP centrado</option></select></div>
     <div class="campo"><label for="segmentacion-selector">Intervalo</label><select id="segmentacion-selector"><option value="puntuacion">Según puntuación</option><option value="cinco_palabras">Cada cinco palabras</option></select></div>
     <div class="campo"><label for="maximo-segmento">Máximo por fragmento</label><input id="maximo-segmento" type="number" min="2" max="24" value="${perfil_actual.maximo_palabras_segmento}"></div>
-    <div class="campo"><label for="unidad-rsvp">Unidad RSVP</label><select id="unidad-rsvp"><option value="palabra">Una palabra</option><option value="frase_corta">Frase corta</option></select></div>
-    <div class="campo"><label for="palabras-rsvp">Palabras por frase RSVP</label><input id="palabras-rsvp" type="number" min="1" max="8" value="${perfil_actual.palabras_rsvp}"></div>
+    <div class="campo" data-solo-rsvp><label for="unidad-rsvp">Unidad RSVP</label><select id="unidad-rsvp"><option value="palabra">Una palabra</option><option value="frase_corta">Frase corta</option></select></div>
+    <div class="campo" data-solo-rsvp><label for="palabras-rsvp">Palabras por frase RSVP</label><input id="palabras-rsvp" type="number" min="1" max="8" value="${perfil_actual.palabras_rsvp}"></div>
     <div class="campo"><label for="matematica">Matemática en voz</label><select id="matematica"><option value="leer">Leer</option><option value="omitir">Omitir</option><option value="indicar">Decir «ecuación»</option></select></div>
     <div class="campo campo-linea"><label for="auto-scroll">Auto-scroll</label><input id="auto-scroll" class="interruptor" type="checkbox"></div></section>
-    <section class="panel-seccion"><div class="encabezado-campo"><h2 class="panel-titulo">Voz</h2><button id="abrir-repositorios-voz" class="boton-biblioteca-temas" aria-label="Administrar repositorios de voz" title="Repositorios de voz">⬡</button></div><div class="campo campo-linea"><label for="voz-habilitada">Voz habilitada</label><input id="voz-habilitada" class="interruptor" type="checkbox"></div><div class="campo"><label>Motor</label><select disabled><option>TTS del sistema · experimental</option></select></div><div class="campo"><label for="palabras-minuto">Velocidad visual · palabras/min</label><input id="palabras-minuto" type="number" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto}"></div><p style="font-size:12px;color:var(--atenuado);line-height:1.5">Kokoro/ONNX y Piper se administran mediante repositorios locales verificables.</p></section></div><section id="contenido-fragmentos" class="panel-seccion" hidden></section></div></aside></div>
-    <div id="menu-agregar" class="menu-agregar" hidden><button id="anadir-archivo">Añadir archivo</button><button id="anadir-carpeta">Añadir carpeta del sistema</button><button id="crear-carpeta">Crear carpeta virtual</button></div><div id="menu-contextual" class="menu-agregar menu-contextual" hidden></div><section id="biblioteca-temas" class="modal-temas" hidden><div class="dialogo-temas"><header><div><h2>Biblioteca de temas</h2><p>Paletas locales para lectura e interfaz</p></div><button id="cerrar-biblioteca-temas" aria-label="Cerrar">×</button></header><div id="lista-biblioteca-temas" class="lista-biblioteca-temas"></div><footer><button id="guardar-tema-actual" class="boton primario">Guardar tema actual</button></footer></div></section><section id="repositorios-voz" class="modal-temas" hidden><div class="dialogo-temas dialogo-repositorios"><header><div><h2>Repositorios de voz</h2><p>Motores y paquetes locales; ninguna descarga es automática</p></div><button id="cerrar-repositorios-voz" aria-label="Cerrar">×</button></header><div id="lista-repositorios-voz" class="lista-repositorios-voz"></div><footer><span>Los paquetes remotos requieren licencia y SHA-256 verificables.</span></footer></div></section>
+    <section class="panel-seccion"><div class="encabezado-campo"><h2 class="panel-titulo">Voz</h2><button id="abrir-repositorios-voz" class="boton-biblioteca-temas" aria-label="Administrar repositorios de voz" title="Repositorios de voz">⬡</button></div><div class="campo campo-linea"><label for="voz-habilitada">Voz habilitada</label><input id="voz-habilitada" class="interruptor" type="checkbox"></div><div class="campo"><label for="motor-voz">Motor</label><select id="motor-voz"><option value="sistema">TTS del sistema · experimental</option><option value="kokoro_onnx" ${kokoro_instalado ? "" : "disabled"}>Kokoro ONNX${kokoro_instalado ? " · verificado" : " · no instalado"}</option></select></div><div class="campo"><label for="palabras-minuto">Velocidad visual · palabras/min</label><input id="palabras-minuto" type="number" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto}"></div><p class="ayuda-campo">Motores y paquetes se administran desde el botón ⬡.</p></section></div><section id="contenido-fragmentos" class="panel-seccion" hidden></section></div></aside></div>
+    <div id="menu-agregar" class="menu-agregar" hidden><button id="anadir-archivo">Añadir archivo</button><button id="anadir-carpeta">Añadir carpeta del sistema</button><button id="crear-carpeta">Crear carpeta virtual</button></div><div id="menu-contextual" class="menu-agregar menu-contextual" hidden></div><section id="biblioteca-temas" class="modal-temas" hidden><div class="dialogo-temas"><header><div><h2>Biblioteca de temas</h2><p>Paletas locales para lectura e interfaz</p></div><button id="cerrar-biblioteca-temas" aria-label="Cerrar">×</button></header><div id="lista-biblioteca-temas" class="lista-biblioteca-temas"></div><footer><button id="guardar-tema-actual" class="boton primario">Guardar tema actual</button></footer></div></section><section id="repositorios-voz" class="modal-temas" hidden><div class="dialogo-temas dialogo-repositorios"><header><div><h2>Repositorios de voz</h2><p>Una biblioteca Python no incluye necesariamente modelo ni voces. Vincula ambos archivos para usarlos en Carlector.</p></div><button id="cerrar-repositorios-voz" aria-label="Cerrar">×</button></header><div id="lista-repositorios-voz" class="lista-repositorios-voz"></div><footer><span>Los paquetes permanecen locales y se verifican al vincularlos.</span><button id="actualizar-estado-voz" class="boton">Comprobar estado</button></footer></div></section>
     <section id="carga-importacion" class="carga-importacion" role="status" aria-live="polite" hidden><strong>Cargando biblioteca</strong><span id="carga-nombre"></span><progress id="carga-progreso" max="100"></progress><small id="carga-estado"></small></section>
     <footer class="control-inferior"><div class="control-documento"><strong id="documento-actual"></strong><span id="estado-documento"></span></div><div class="reproductor"><button id="anterior" class="boton-icono" aria-label="Fragmento anterior">←</button><button id="reproducir" class="reproducir" aria-label="Reproducir" title="Reproducir o pausar · Space / K">▶</button><button id="siguiente" class="boton-icono" aria-label="Fragmento siguiente">→</button></div><div class="control-velocidad"><div class="velocidad-linea"><button id="velocidad-menos" class="velocidad-ajuste" aria-label="Reducir velocidad en 0.1">−</button><input id="velocidad" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.velocidad}"><button id="velocidad-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad en 0.1">+</button><span id="valor-velocidad"></span></div><div class="velocidades-rapidas"><button data-velocidad="1">1×</button><button data-velocidad="1.5">1.5×</button><button data-velocidad="2">2×</button></div></div></footer></div>`;
 
   document.querySelectorAll<HTMLElement>("[data-vista]").forEach((boton) => boton.addEventListener("click", () => cambiar_vista(boton.dataset.vista as "biblioteca" | "lector")));
-  document.querySelector<HTMLInputElement>("#busqueda-global")?.addEventListener("input", (evento) => actualizar_busqueda_global((evento.currentTarget as HTMLInputElement).value));
+  document.querySelector<HTMLInputElement>("#busqueda-global")?.addEventListener("input", (evento) => actualizar_busqueda_diferida((evento.currentTarget as HTMLInputElement).value));
   document.querySelector<HTMLInputElement>("#busqueda-global")?.addEventListener("keydown", (evento) => {
-    if (evento.key === "Enter") { evento.preventDefault(); mover_resultado_busqueda(evento.shiftKey ? -1 : 1); }
-    if (evento.key === "Escape") { (evento.currentTarget as HTMLInputElement).value = ""; actualizar_busqueda_global(""); }
+    if (evento.key === "Enter") {
+      evento.preventDefault();
+      actualizar_busqueda_diferida.cancelar();
+      actualizar_busqueda_global((evento.currentTarget as HTMLInputElement).value);
+      mover_resultado_busqueda(evento.shiftKey ? -1 : 1);
+    }
+    if (evento.key === "Escape") {
+      actualizar_busqueda_diferida.cancelar();
+      (evento.currentTarget as HTMLInputElement).value = "";
+      actualizar_busqueda_global("");
+    }
   });
   document.querySelector("#busqueda-anterior")?.addEventListener("click", () => mover_resultado_busqueda(-1));
   document.querySelector("#busqueda-siguiente")?.addEventListener("click", () => mover_resultado_busqueda(1));
@@ -1069,8 +1124,7 @@ function montar_aplicacion(): void {
     menu.hidden = !abrir;
     if (abrir) {
       const rectangulo = boton.getBoundingClientRect();
-      menu.style.left = `${rectangulo.left}px`;
-      menu.style.top = `${rectangulo.bottom + 6}px`;
+      posicionar_superposicion(menu, { izquierda: rectangulo.left, superior: rectangulo.top, derecha: rectangulo.right, inferior: rectangulo.bottom });
     }
   });
   document.querySelector("#anadir-archivo")?.addEventListener("click", () => {
@@ -1111,9 +1165,25 @@ function montar_aplicacion(): void {
   document.querySelector("#abrir-biblioteca-temas")?.addEventListener("click", () => { renderizar_biblioteca_temas(); const modal = document.querySelector<HTMLElement>("#biblioteca-temas"); if (modal) modal.hidden = false; });
   document.querySelector("#cerrar-biblioteca-temas")?.addEventListener("click", () => document.querySelector<HTMLElement>("#biblioteca-temas")?.setAttribute("hidden", ""));
   document.querySelector("#guardar-tema-actual")?.addEventListener("click", guardar_tema_actual);
-  document.querySelector("#abrir-repositorios-voz")?.addEventListener("click", () => { void actualizar_estado_kokoro().then(() => renderizar_repositorios_voz()); const modal = document.querySelector<HTMLElement>("#repositorios-voz"); if (modal) modal.hidden = false; });
+  document.querySelector("#abrir-repositorios-voz")?.addEventListener("click", () => {
+    renderizar_repositorios_voz();
+    const modal = document.querySelector<HTMLElement>("#repositorios-voz");
+    if (modal) modal.hidden = false;
+    void actualizar_estado_kokoro().then(renderizar_repositorios_voz);
+  });
   document.querySelector("#cerrar-repositorios-voz")?.addEventListener("click", () => document.querySelector<HTMLElement>("#repositorios-voz")?.setAttribute("hidden", ""));
-  document.querySelector("#repositorios-voz")?.addEventListener("click", (evento) => { if (evento.target === evento.currentTarget) (evento.currentTarget as HTMLElement).hidden = true; });
+  document.querySelector("#repositorios-voz")?.addEventListener("click", (evento) => {
+    if (evento.target === evento.currentTarget) { (evento.currentTarget as HTMLElement).hidden = true; return; }
+    const objetivo = evento.target instanceof Element ? evento.target : null;
+    if (objetivo?.closest("[data-instalar-kokoro]")) { void instalar_paquete_kokoro(); return; }
+    const boton_motor = objetivo?.closest<HTMLElement>("[data-usar-motor]");
+    if (boton_motor) usar_motor_voz(boton_motor.dataset.usarMotor ?? "");
+  });
+  document.querySelector("#repositorios-voz")?.addEventListener("change", (evento) => {
+    const control = evento.target instanceof HTMLInputElement ? evento.target.closest<HTMLInputElement>("[data-alternar-repositorio]") : null;
+    if (control) alternar_repositorio_voz(control);
+  });
+  document.querySelector("#actualizar-estado-voz")?.addEventListener("click", () => void actualizar_estado_kokoro().then(renderizar_repositorios_voz));
   document.querySelector("#biblioteca-temas")?.addEventListener("click", (evento) => { if (evento.target === evento.currentTarget) (evento.currentTarget as HTMLElement).hidden = true; });
   document.querySelectorAll<HTMLInputElement>("[data-color-interfaz]").forEach((control) => control.addEventListener("input", () => {
     const nombre = control.dataset.colorInterfaz as keyof PerfilLectura["colores"];
@@ -1128,6 +1198,7 @@ function montar_aplicacion(): void {
   document.querySelector<HTMLSelectElement>("#unidad-rsvp")?.addEventListener("change", (evento) => actualizar_perfil({ unidad_rsvp: (evento.currentTarget as HTMLSelectElement).value as PerfilLectura["unidad_rsvp"] }));
   document.querySelector<HTMLInputElement>("#palabras-rsvp")?.addEventListener("change", (evento) => actualizar_perfil({ palabras_rsvp: Number((evento.currentTarget as HTMLInputElement).value) }));
   document.querySelector<HTMLInputElement>("#voz-habilitada")?.addEventListener("change", (evento) => { const continuar = reproduciendo; detener_voz(); actualizar_perfil({ voz_habilitada: (evento.currentTarget as HTMLInputElement).checked }); if (continuar) reproducir_fragmento(); });
+  document.querySelector<HTMLSelectElement>("#motor-voz")?.addEventListener("change", (evento) => actualizar_perfil({ motor_voz: (evento.currentTarget as HTMLSelectElement).value as PerfilLectura["motor_voz"] }));
   document.querySelector<HTMLInputElement>("#palabras-minuto")?.addEventListener("change", (evento) => actualizar_perfil({ palabras_por_minuto: Number((evento.currentTarget as HTMLInputElement).value) }));
   document.querySelector<HTMLInputElement>("#velocidad")?.addEventListener("input", (evento) => establecer_velocidad(Number((evento.currentTarget as HTMLInputElement).value)));
   document.querySelector("#velocidad-menos")?.addEventListener("click", () => establecer_velocidad(ajustar_velocidad(perfil_actual.velocidad, -0.1)));
@@ -1145,8 +1216,15 @@ function montar_aplicacion(): void {
   if (modo_lectura) modo_lectura.value = perfil_actual.modo_lectura;
   if (segmentacion) segmentacion.value = perfil_actual.estrategia_segmentacion;
   if (unidad_rsvp) unidad_rsvp.value = perfil_actual.unidad_rsvp;
-  document.addEventListener("click", (evento) => { if (!(evento.target instanceof Element && evento.target.closest("#menu-contextual"))) cerrar_menus_contextuales(); });
+  document.addEventListener("click", (evento) => {
+    const dentro_contextual = evento.target instanceof Element && evento.target.closest("#menu-contextual");
+    const dentro_agregar = evento.target instanceof Element && evento.target.closest("#menu-agregar, #abrir-menu-agregar");
+    if (!dentro_contextual) cerrar_menus_contextuales();
+    if (!dentro_agregar) document.querySelector<HTMLElement>("#menu-agregar")?.setAttribute("hidden", "");
+  });
+  document.addEventListener("scroll", () => { cerrar_menus_contextuales(); document.querySelector<HTMLElement>("#menu-agregar")?.setAttribute("hidden", ""); }, true);
   document.addEventListener("keydown", (evento) => {
+    if (evento.key === "Escape") { cerrar_menus_contextuales(); document.querySelector<HTMLElement>("#menu-agregar")?.setAttribute("hidden", ""); }
     if ((evento.metaKey || evento.ctrlKey) && evento.key.toLocaleLowerCase("es") === "f") {
       evento.preventDefault();
       const buscador = document.querySelector<HTMLInputElement>("#busqueda-global");
@@ -1157,6 +1235,7 @@ function montar_aplicacion(): void {
     if (!es_atajo_reproduccion({ code: evento.code, etiqueta_objetivo: objetivo?.tagName ?? "BODY", editable: objetivo?.isContentEditable })) return;
     evento.preventDefault(); alternar_reproduccion();
   });
+  enlazar_eventos_biblioteca();
   aplicar_perfil(); renderizar_panel_izquierdo(); renderizar_panel_fragmentos(); renderizar_biblioteca(); actualizar_panel_perfil(); actualizar_controles();
   void actualizar_estado_kokoro();
   void cargar_biblioteca_nativa();

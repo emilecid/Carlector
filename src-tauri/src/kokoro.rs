@@ -20,11 +20,13 @@ pub struct EstadoKokoro {
 pub struct MotorKokoro {
     directorio: PathBuf,
     motor: Option<KokoroTts>,
+    modelo_sha256: Option<String>,
+    voces_sha256: Option<String>,
 }
 
 impl MotorKokoro {
     pub fn nuevo(directorio_datos: &Path) -> Self {
-        Self { directorio: directorio_datos.join("motores").join("kokoro-onnx-v1"), motor: None }
+        Self { directorio: directorio_datos.join("motores").join("kokoro-onnx-v1"), motor: None, modelo_sha256: None, voces_sha256: None }
     }
 
     fn ruta_modelo(&self) -> PathBuf { self.directorio.join(ARCHIVO_MODELO) }
@@ -33,10 +35,12 @@ impl MotorKokoro {
     pub fn estado(&self) -> Result<EstadoKokoro, String> {
         let modelo = self.ruta_modelo();
         let voces = self.ruta_voces();
+        let instalado = validar_archivo(&modelo, "modelo ONNX", 1_000_000).is_ok()
+            && validar_archivo(&voces, "paquete de voces", 1_000).is_ok();
         Ok(EstadoKokoro {
-            instalado: modelo.is_file() && voces.is_file(),
-            modelo_sha256: modelo.is_file().then(|| calcular_sha256(&modelo)).transpose()?,
-            voces_sha256: voces.is_file().then(|| calcular_sha256(&voces)).transpose()?,
+            instalado,
+            modelo_sha256: self.modelo_sha256.clone(),
+            voces_sha256: self.voces_sha256.clone(),
             directorio: self.directorio.to_string_lossy().into_owned(),
         })
     }
@@ -47,6 +51,8 @@ impl MotorKokoro {
         fs::create_dir_all(&self.directorio).map_err(|error| format!("No fue posible crear el directorio Kokoro: {error}"))?;
         fs::copy(ruta_modelo, self.ruta_modelo()).map_err(|error| format!("No fue posible copiar el modelo: {error}"))?;
         fs::copy(ruta_voces, self.ruta_voces()).map_err(|error| format!("No fue posible copiar las voces: {error}"))?;
+        self.modelo_sha256 = Some(calcular_sha256(&self.ruta_modelo())?);
+        self.voces_sha256 = Some(calcular_sha256(&self.ruta_voces())?);
         self.motor = None;
         self.cargar_motor().await?;
         self.estado()
@@ -115,5 +121,19 @@ mod pruebas {
         assert_eq!(&wav[0..4], b"RIFF");
         assert_eq!(&wav[8..12], b"WAVE");
         assert_eq!(wav.len(), 50);
+    }
+
+    #[test]
+    fn estado_exige_modelo_y_voces_con_tamano_utilizable() {
+        let raiz = std::env::temp_dir().join(format!("carlector-kokoro-{}", std::process::id()));
+        let directorio = raiz.join("motores").join("kokoro-onnx-v1");
+        fs::create_dir_all(&directorio).expect("crear temporal Kokoro");
+        fs::write(directorio.join(ARCHIVO_MODELO), vec![0_u8; 1_000_000]).expect("modelo temporal");
+        fs::write(directorio.join(ARCHIVO_VOCES), vec![0_u8; 1_000]).expect("voces temporales");
+        let motor = MotorKokoro::nuevo(&raiz);
+        assert!(motor.estado().expect("estado Kokoro").instalado);
+        fs::write(directorio.join(ARCHIVO_VOCES), [0_u8; 10]).expect("voces inválidas");
+        assert!(!motor.estado().expect("estado inválido").instalado);
+        fs::remove_dir_all(&raiz).expect("limpiar temporal Kokoro");
     }
 }
