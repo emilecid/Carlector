@@ -1,17 +1,27 @@
 mod biblioteca;
 mod kokoro;
+pub mod markdown;
 
 use std::fs;
 use std::sync::{Arc, Mutex};
 
 use biblioteca::{abrir_base_datos, descubrir_documentos_directorio, Carpeta, Documento, ErrorBiblioteca, EstadoLecturaDocumento, FragmentoGuardado, NotaDocumento, RepositorioBiblioteca};
 use kokoro::{EstadoKokoro, MotorKokoro};
-use tauri::{Manager, State};
+use markdown::DocumentoMarkdown;
+use tauri::{Emitter, Manager, State};
 
 struct EstadoAplicacion {
     biblioteca: Mutex<RepositorioBiblioteca>,
     kokoro: Arc<Mutex<MotorKokoro>>,
 }
+
+#[derive(Default)]
+struct EstadoArchivosAbiertos {
+    pendientes: Vec<String>,
+    receptor_listo: bool,
+}
+
+struct ArchivosAbiertos(Mutex<EstadoArchivosAbiertos>);
 
 #[tauri::command]
 async fn estado_kokoro(estado: State<'_, EstadoAplicacion>) -> Result<EstadoKokoro, String> {
@@ -58,6 +68,18 @@ fn guardar_progreso(id_documento: String, progreso: f64, estado_lectura: EstadoL
 fn leer_documento(id_documento: String, estado: State<'_, EstadoAplicacion>) -> Result<Vec<u8>, String> {
     let biblioteca = estado.biblioteca.lock().map_err(|_| "No fue posible bloquear la biblioteca".to_string())?;
     biblioteca.leer_documento(&id_documento).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn extraer_markdown(texto: String, nombre_archivo: String) -> DocumentoMarkdown {
+    markdown::extraer_markdown(&texto, &nombre_archivo)
+}
+
+#[tauri::command]
+fn tomar_archivos_abiertos(estado: State<'_, ArchivosAbiertos>) -> Result<Vec<String>, String> {
+    let mut archivos = estado.0.lock().map_err(|_| "No fue posible acceder a los archivos abiertos".to_string())?;
+    archivos.receptor_listo = true;
+    Ok(std::mem::take(&mut archivos.pendientes))
 }
 
 #[tauri::command]
@@ -152,9 +174,10 @@ fn leer_cache_documento(documento_id: String, estado: State<'_, EstadoAplicacion
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn ejecutar() {
-    tauri::Builder::default()
+    let aplicacion = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .manage(ArchivosAbiertos(Mutex::new(EstadoArchivosAbiertos::default())))
         .setup(|aplicacion| {
             let directorio_datos = aplicacion.path().app_data_dir()?;
             fs::create_dir_all(&directorio_datos)?;
@@ -168,7 +191,18 @@ pub fn ejecutar() {
             aplicacion.manage(EstadoAplicacion { biblioteca: Mutex::new(conexion), kokoro: Arc::new(Mutex::new(MotorKokoro::nuevo(&directorio_datos))) });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![estado_kokoro, instalar_kokoro, sintetizar_kokoro, listar_documentos, importar_documento, guardar_progreso, leer_documento, listar_documentos_directorio, listar_carpetas, crear_carpeta, renombrar_carpeta, eliminar_carpeta, mover_documento, editar_documento, reordenar_documentos, eliminar_documento, guardar_fragmento, listar_fragmentos, eliminar_fragmento, cambiar_destacado_fragmento, guardar_nota, listar_notas, eliminar_nota, guardar_cache_documento, leer_cache_documento])
-        .run(tauri::generate_context!())
-        .expect("No fue posible ejecutar Carlector");
+        .invoke_handler(tauri::generate_handler![estado_kokoro, instalar_kokoro, sintetizar_kokoro, listar_documentos, importar_documento, guardar_progreso, leer_documento, extraer_markdown, tomar_archivos_abiertos, listar_documentos_directorio, listar_carpetas, crear_carpeta, renombrar_carpeta, eliminar_carpeta, mover_documento, editar_documento, reordenar_documentos, eliminar_documento, guardar_fragmento, listar_fragmentos, eliminar_fragmento, cambiar_destacado_fragmento, guardar_nota, listar_notas, eliminar_nota, guardar_cache_documento, leer_cache_documento])
+        .build(tauri::generate_context!())
+        .expect("No fue posible construir Carlector");
+    aplicacion.run(|manejador, evento| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Opened { urls } = evento {
+            let rutas = urls.iter().filter_map(|url| url.to_file_path().ok()).map(|ruta| ruta.to_string_lossy().to_string()).collect::<Vec<_>>();
+            if rutas.is_empty() { return; }
+            if let Ok(mut archivos) = manejador.state::<ArchivosAbiertos>().0.lock() {
+                if !archivos.receptor_listo { archivos.pendientes.extend(rutas.clone()); }
+            }
+            let _ = manejador.emit("abrir-documentos", rutas);
+        }
+    });
 }

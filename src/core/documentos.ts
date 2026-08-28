@@ -1,4 +1,5 @@
 import type { EntradaIndice, EstructuraDocumento, TipoFragmento } from "./modelos.ts";
+import { normalizar_texto_pdf, type CambioNormalizacionPdf } from "./limpieza_pdf.ts";
 
 const PATRON_SIMBOLOS_MATEMATICOS = /[=≈≠≤≥∑∫√∞∂∇±×÷^_{}()[\]|]/g;
 const PATRON_FUENTE_MATEMATICA = /(?:math|symbol|cmr|cmmi|cmsy|msam|msbm|stix)/i;
@@ -6,19 +7,36 @@ const PATRON_FUENTE_MATEMATICA = /(?:math|symbol|cmr|cmmi|cmsy|msam|msbm|stix)/i
 export interface BloqueDocumento {
   id: string;
   contenido: string;
+  contenido_original?: string;
+  normalizaciones?: CambioNormalizacionPdf[];
   tipo: TipoFragmento;
   pagina?: number;
   estructura?: EstructuraDocumento;
   nivel?: number;
   tamano_relativo?: number;
   alineacion?: "left" | "center" | "right" | "justify";
+  inicio_fuente?: number;
+  fin_fuente?: number;
+}
+
+export function crear_bloque_pdf(id: string, pagina: number, contenido_original: string, fuentes: string[]): BloqueDocumento {
+  const normalizado = normalizar_texto_pdf(contenido_original);
+  const fue_modificado = normalizado.texto !== contenido_original;
+  return {
+    id,
+    contenido: normalizado.texto,
+    contenido_original: fue_modificado ? contenido_original : undefined,
+    normalizaciones: fue_modificado ? normalizado.cambios : undefined,
+    tipo: clasificar_linea_pdf(normalizado.texto, fuentes),
+    pagina,
+  };
 }
 
 export interface DocumentoProcesado {
   titulo: string;
   autor: string;
   idioma: string;
-  formato: "PDF" | "EPUB";
+  formato: "PDF" | "EPUB" | "MARKDOWN";
   bloques: BloqueDocumento[];
   indice: EntradaIndice[];
   portada?: string;

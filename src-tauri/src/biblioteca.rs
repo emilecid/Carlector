@@ -96,7 +96,7 @@ pub fn abrir_base_datos(ruta: &Path) -> Result<RepositorioBiblioteca, ErrorBibli
            id TEXT PRIMARY KEY,
            titulo TEXT NOT NULL,
            autor TEXT NOT NULL DEFAULT '',
-           formato TEXT NOT NULL CHECK(formato IN ('PDF', 'EPUB')),
+           formato TEXT NOT NULL CHECK(formato IN ('PDF', 'EPUB', 'MARKDOWN')),
            ruta TEXT NOT NULL UNIQUE,
            progreso REAL NOT NULL DEFAULT 0 CHECK(progreso BETWEEN 0 AND 100),
            ultima_lectura TEXT,
@@ -138,7 +138,38 @@ pub fn abrir_base_datos(ruta: &Path) -> Result<RepositorioBiblioteca, ErrorBibli
     migrar_columna(&conexion, "estado_lectura_json", "TEXT")?;
     migrar_columna_tabla(&conexion, "fragmentos_guardados", "destacado", "INTEGER NOT NULL DEFAULT 1")?;
     migrar_columna_tabla(&conexion, "fragmentos_guardados", "ancla_json", "TEXT")?;
+    migrar_formato_markdown(&conexion)?;
     Ok(RepositorioBiblioteca { conexion })
+}
+
+fn migrar_formato_markdown(conexion: &Connection) -> Result<(), rusqlite::Error> {
+    let definicion: String = conexion.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'documentos'",
+        [],
+        |fila| fila.get(0),
+    )?;
+    if definicion.contains("'MARKDOWN'") { return Ok(()); }
+    conexion.execute_batch(
+        "BEGIN IMMEDIATE;
+         ALTER TABLE documentos RENAME TO documentos_anteriores;
+         CREATE TABLE documentos (
+           id TEXT PRIMARY KEY,
+           titulo TEXT NOT NULL,
+           autor TEXT NOT NULL DEFAULT '',
+           formato TEXT NOT NULL CHECK(formato IN ('PDF', 'EPUB', 'MARKDOWN')),
+           ruta TEXT NOT NULL UNIQUE,
+           progreso REAL NOT NULL DEFAULT 0 CHECK(progreso BETWEEN 0 AND 100),
+           ultima_lectura TEXT,
+           carpeta_id TEXT,
+           orden INTEGER NOT NULL DEFAULT 0,
+           estado_lectura_json TEXT
+         );
+         INSERT INTO documentos (id, titulo, autor, formato, ruta, progreso, ultima_lectura, carpeta_id, orden, estado_lectura_json)
+           SELECT id, titulo, autor, formato, ruta, progreso, ultima_lectura, carpeta_id, orden, estado_lectura_json FROM documentos_anteriores;
+         DROP TABLE documentos_anteriores;
+         CREATE INDEX IF NOT EXISTS documentos_ultima_lectura ON documentos(ultima_lectura);
+         COMMIT;",
+    )
 }
 
 fn migrar_columna(conexion: &Connection, nombre: &str, definicion: &str) -> Result<(), rusqlite::Error> {
@@ -159,10 +190,12 @@ fn validar_ruta_documento(ruta: &str) -> Result<(PathBuf, String), ErrorBibliote
     if !ruta_archivo.is_file() {
         return Err(ErrorBiblioteca::ArchivoInexistente(ruta.to_string()));
     }
-    let formato = ruta_archivo.extension().and_then(|extension| extension.to_str()).unwrap_or_default().to_uppercase();
-    if formato != "PDF" && formato != "EPUB" {
-        return Err(ErrorBiblioteca::FormatoInvalido(formato));
-    }
+    let extension = ruta_archivo.extension().and_then(|extension| extension.to_str()).unwrap_or_default().to_uppercase();
+    let formato = match extension.as_str() {
+        "PDF" | "EPUB" => extension,
+        "MD" | "MARKDOWN" => "MARKDOWN".to_string(),
+        _ => return Err(ErrorBiblioteca::FormatoInvalido(extension)),
+    };
     Ok((ruta_archivo, formato))
 }
 
@@ -184,7 +217,7 @@ pub fn descubrir_documentos_directorio(ruta: &Path) -> Result<Vec<String>, Error
                 continue;
             }
             let extension = ruta_entrada.extension().and_then(|valor| valor.to_str()).unwrap_or_default();
-            if tipo.is_file() && (extension.eq_ignore_ascii_case("pdf") || extension.eq_ignore_ascii_case("epub")) {
+            if tipo.is_file() && ["pdf", "epub", "md", "markdown"].iter().any(|admitida| extension.eq_ignore_ascii_case(admitida)) {
                 let ruta_canonica = ruta_entrada.canonicalize()?;
                 if ruta_canonica.starts_with(&raiz) {
                     documentos.push(ruta_canonica.to_string_lossy().to_string());
@@ -417,6 +450,57 @@ mod pruebas {
         let error = validar_ruta_documento(ruta_txt.to_str().expect("ruta UTF-8")).expect_err("debe fallar");
 
         assert!(matches!(error, ErrorBiblioteca::FormatoInvalido(_)));
+        fs::remove_dir_all(directorio).expect("limpiar temporal");
+    }
+
+    #[test]
+    fn importa_markdown_y_lo_descubre_en_carpetas() {
+        let directorio = std::env::temp_dir().join(format!("lector-markdown-{}", std::process::id()));
+        fs::create_dir_all(&directorio).expect("crear temporal");
+        let ruta_markdown = directorio.join("Apunte.MD");
+        fs::write(&ruta_markdown, "# Álgebra\n").expect("crear Markdown");
+        let repositorio = abrir_base_datos(&directorio.join("prueba.db")).expect("abrir base");
+
+        let documento = repositorio.importar_documento(ruta_markdown.to_str().expect("ruta UTF-8")).expect("importar Markdown");
+        let encontrados = descubrir_documentos_directorio(&directorio).expect("descubrir Markdown");
+
+        assert_eq!(documento.formato, "MARKDOWN");
+        assert_eq!(repositorio.leer_documento(&documento.id).expect("leer Markdown"), "# Álgebra\n".as_bytes());
+        assert!(encontrados.iter().any(|ruta| ruta.ends_with("Apunte.MD")));
+        fs::remove_dir_all(directorio).expect("limpiar temporal");
+    }
+
+    #[test]
+    fn migra_biblioteca_anterior_sin_perder_documentos() {
+        let directorio = std::env::temp_dir().join(format!("lector-migracion-markdown-{}", std::process::id()));
+        fs::create_dir_all(&directorio).expect("crear temporal");
+        let ruta_db = directorio.join("prueba.db");
+        let ruta_pdf = directorio.join("existente.pdf");
+        let ruta_md = directorio.join("nuevo.md");
+        fs::write(&ruta_pdf, b"%PDF").expect("crear PDF");
+        fs::write(&ruta_md, b"# Nuevo").expect("crear Markdown");
+        let conexion = Connection::open(&ruta_db).expect("abrir DB anterior");
+        conexion.execute_batch(
+            "CREATE TABLE documentos (
+               id TEXT PRIMARY KEY, titulo TEXT NOT NULL, autor TEXT NOT NULL DEFAULT '',
+               formato TEXT NOT NULL CHECK(formato IN ('PDF', 'EPUB')), ruta TEXT NOT NULL UNIQUE,
+               progreso REAL NOT NULL DEFAULT 0, ultima_lectura TEXT, carpeta_id TEXT,
+               orden INTEGER NOT NULL DEFAULT 0, estado_lectura_json TEXT
+             );",
+        ).expect("crear esquema anterior");
+        conexion.execute(
+            "INSERT INTO documentos (id, titulo, formato, ruta) VALUES ('anterior', 'Existente', 'PDF', ?1)",
+            [ruta_pdf.to_string_lossy().to_string()],
+        ).expect("guardar documento anterior");
+        drop(conexion);
+
+        let repositorio = abrir_base_datos(&ruta_db).expect("migrar base");
+        repositorio.importar_documento(ruta_md.to_str().expect("ruta UTF-8")).expect("importar Markdown");
+        let documentos = repositorio.listar_documentos().expect("listar después de migrar");
+
+        assert_eq!(documentos.len(), 2);
+        assert!(documentos.iter().any(|documento| documento.id == "anterior" && documento.formato == "PDF"));
+        assert!(documentos.iter().any(|documento| documento.formato == "MARKDOWN"));
         fs::remove_dir_all(directorio).expect("limpiar temporal");
     }
 

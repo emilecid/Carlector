@@ -3,13 +3,13 @@ import ePub from "epubjs";
 import { GlobalWorkerOptions, getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import url_trabajador_pdf from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
 
-import { clasificar_linea_pdf, type BloqueDocumento, type DocumentoProcesado } from "../core/documentos.ts";
+import { crear_bloque_pdf, type BloqueDocumento, type DocumentoProcesado } from "../core/documentos.ts";
 import { detectar_lineas_marginales_repetidas, type LineaMarginalPdf } from "../core/limpieza_pdf.ts";
 import type { EntradaIndice } from "../core/modelos.ts";
 import { clasificar_estructura_epub } from "./semantica_epub.ts";
 
 GlobalWorkerOptions.workerSrc = url_trabajador_pdf;
-const VERSION_CACHE_DOCUMENTO = 5;
+const VERSION_CACHE_DOCUMENTO = 6;
 
 interface ElementoTextoPdf {
   str: string;
@@ -72,7 +72,7 @@ export async function extraer_pdf(datos: ArrayBuffer, nombre_archivo: string, no
   }
   const marginales = detectar_lineas_marginales_repetidas(lineas_extraidas);
   lineas_extraidas.filter(({ id }) => !marginales.has(id)).forEach(({ id, pagina, texto, fuentes }) => {
-    bloques.push({ id, contenido: texto, tipo: clasificar_linea_pdf(texto, fuentes), pagina });
+    bloques.push(crear_bloque_pdf(id, pagina, texto, fuentes));
   });
   const informacion = metadata?.info as { Title?: string; Author?: string } | undefined;
   const indice_documento: EntradaIndice[] = [];

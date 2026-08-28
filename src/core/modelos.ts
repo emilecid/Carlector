@@ -1,6 +1,6 @@
 export type PoliticaMatematica = "leer" | "omitir" | "indicar";
 export type TipoFragmento = "texto" | "matematica" | "tabla";
-export type EstructuraDocumento = "parrafo" | "titulo" | "lista" | "cita" | "referencia" | "preformateado" | "tabla" | "matematica";
+export type EstructuraDocumento = "parrafo" | "titulo" | "lista" | "cita" | "referencia" | "nota_pie" | "encabezado" | "pie_pagina" | "preformateado" | "tabla" | "matematica";
 
 export interface FragmentoLectura {
   id: string;
@@ -23,7 +23,7 @@ export interface DocumentoBiblioteca {
   id: string;
   titulo: string;
   autor: string;
-  formato: "PDF" | "EPUB";
+  formato: "PDF" | "EPUB" | "MARKDOWN";
   ruta: string;
   progreso: number;
   etiquetas: string[];

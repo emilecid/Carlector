@@ -23,6 +23,7 @@ import { ReproductorWebAudio } from "./infra/reproductor_web_audio.ts";
 import { persistencia } from "./infra/persistencia.ts";
 import DOMPurify from "dompurify";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -64,7 +65,7 @@ const binarios_pdf_web = new Map<string, ArrayBuffer>();
 const TAMANO_VENTANA_TTS = 12;
 const TAMANO_LOTE_RENDERIZADO = 320;
 const TAMANO_VENTANA_DOM = 600;
-const VERSION_CACHE_DOCUMENTO = 5;
+const VERSION_CACHE_DOCUMENTO = 6;
 const CANTIDAD_ADELANTADA_KOKORO = 3;
 let indice_resaltado_anterior = -1;
 let ultimo_guardado_progreso = 0;
@@ -109,6 +110,7 @@ let desplazamiento_pendiente: number | null = null;
 let proporcion_pdf_doble = 50;
 let miniaturas_pdf_visibles = persistencia.miniaturasPdf();
 let autoscroll_suspendido = false;
+let cola_apertura_archivos: Promise<void> = Promise.resolve();
 const ultimos_guardados_paneles = new Map<string, number>();
 let foco_antes_modal: HTMLElement | null = null;
 let foco_antes_busqueda: HTMLElement | null = null;
@@ -1529,9 +1531,13 @@ async function procesar_documento_nativo(documento: DocumentoBiblioteca, notific
   let procesado: DocumentoProcesado;
   try {
     const informar_extraccion = (completados: number, total: number, etapa: string): void => notificar?.(15 + Math.round((completados / Math.max(1, total)) * 75), etapa);
-    procesado = documento.formato === "PDF"
-      ? await extractores.extraer_pdf(datos, documento.titulo, informar_extraccion)
-      : await extractores.extraer_epub(datos, documento.titulo, informar_extraccion);
+    if (documento.formato === "PDF") procesado = await extractores.extraer_pdf(datos, documento.titulo, informar_extraccion);
+    else if (documento.formato === "EPUB") procesado = await extractores.extraer_epub(datos, documento.titulo, informar_extraccion);
+    else {
+      const texto = new TextDecoder("utf-8", { fatal: true }).decode(datos);
+      procesado = await invoke<DocumentoProcesado>("extraer_markdown", { texto, nombreArchivo: documento.titulo });
+      informar_extraccion(1, 1, "Analizando Markdown");
+    }
   } catch (error) {
     const tipo_datos = Object.prototype.toString.call(datos);
     const tamano_datos = typeof datos?.byteLength === "number" ? datos.byteLength : -1;
@@ -1775,24 +1781,26 @@ function carpeta_destino_actual(): string | null {
 async function importar_documentos(lista_archivos: FileList | null): Promise<void> {
   if (!lista_archivos) return;
   const extractores = await import("./infra/extractores.ts");
-  const archivos = [...lista_archivos].filter((archivo) => /\.(?:pdf|epub)$/i.test(archivo.name));
+  const archivos = [...lista_archivos].filter((archivo) => /\.(?:pdf|epub|md|markdown)$/i.test(archivo.name));
   const raiz_sistema = archivos.find(({ webkitRelativePath }) => webkitRelativePath)?.webkitRelativePath.split("/")[0];
   const carpeta_importada = raiz_sistema ? await crear_carpeta_biblioteca(raiz_sistema, false) : null;
   const carpeta_id = carpeta_importada?.id ?? carpeta_destino_actual();
   for (const [indice, archivo] of archivos.entries()) {
     mostrar_carga(archivo.name, indice, archivos.length, "Extrayendo contenido local");
     const extension = archivo.name.split(".").pop()?.toUpperCase();
-    if (extension !== "PDF" && extension !== "EPUB") continue;
+    const formato = extension === "MD" || extension === "MARKDOWN" ? "MARKDOWN" : extension;
+    if (formato !== "PDF" && formato !== "EPUB" && formato !== "MARKDOWN") continue;
     const id_documento = crypto.randomUUID();
     const datos = await archivo.arrayBuffer();
-    const procesado = extension === "PDF"
+    if (formato === "MARKDOWN") throw new Error("La importación Markdown requiere la aplicación de escritorio.");
+    const procesado = formato === "PDF"
       ? await extractores.extraer_pdf(datos.slice(0), archivo.name)
       : await extractores.extraer_epub(datos, archivo.name);
-    if (extension === "PDF") binarios_pdf_web.set(id_documento, datos);
+    if (formato === "PDF") binarios_pdf_web.set(id_documento, datos);
     documentos_procesados.set(id_documento, procesado);
     documentos = agregar_documento(documentos, {
       id: id_documento, titulo: procesado.titulo, autor: procesado.autor,
-      formato: extension, ruta: `${archivo.name}:${archivo.size}:${archivo.lastModified}`,
+      formato, ruta: `${archivo.name}:${archivo.size}:${archivo.lastModified}`,
       progreso: 0, etiquetas: [procesado.idioma || "Sin clasificar"], ultima_lectura: null, carpeta_id,
     });
   }
@@ -1826,7 +1834,7 @@ async function cargar_biblioteca_nativa(): Promise<void> {
 }
 
 async function importar_con_dialogo_nativo(): Promise<void> {
-  const seleccion = await open({ multiple: true, filters: [{ name: "Documentos", extensions: ["pdf", "epub"] }] });
+  const seleccion = await open({ multiple: true, filters: [{ name: "Documentos", extensions: ["pdf", "epub", "md", "markdown"] }] });
   const rutas = seleccion === null ? [] : Array.isArray(seleccion) ? seleccion : [seleccion];
   await importar_rutas_nativas(rutas, carpeta_destino_actual());
 }
@@ -1847,10 +1855,27 @@ async function importar_rutas_nativas(rutas: string[], carpeta_id: string | null
   finalizar_carga(rutas.length);
 }
 
+function encolar_archivos_abiertos(rutas: string[]): void {
+  const unicas = [...new Set(rutas.filter((ruta) => /\.(?:pdf|epub|md|markdown)$/i.test(ruta)))];
+  if (!unicas.length) return;
+  cola_apertura_archivos = cola_apertura_archivos
+    .then(() => ejecutar_importacion(() => importar_rutas_nativas(unicas), "Apertura desde Finder"));
+}
+
+async function inicializar_apertura_archivos_nativa(): Promise<void> {
+  if (!isTauri()) return;
+  const carga_biblioteca = cargar_biblioteca_nativa();
+  cola_apertura_archivos = carga_biblioteca;
+  await listen<string[]>("abrir-documentos", ({ payload }) => encolar_archivos_abiertos(payload));
+  await carga_biblioteca;
+  const iniciales = await invoke<string[]>("tomar_archivos_abiertos");
+  encolar_archivos_abiertos(iniciales);
+}
+
 async function importar_carpeta_nativa(): Promise<void> {
   const seleccion = await open({ directory: true, multiple: false, title: "Añadir carpeta a biblioteca" });
   if (!seleccion) return;
-  mostrar_carga(seleccion.split(/[\\/]/).pop() ?? seleccion, 0, 0, "Buscando PDF y EPUB");
+  mostrar_carga(seleccion.split(/[\\/]/).pop() ?? seleccion, 0, 0, "Buscando PDF, EPUB y Markdown");
   const rutas = await invoke<string[]>("listar_documentos_directorio", { ruta: seleccion });
   if (!rutas.length) { finalizar_carga(0); return; }
   const nombre = seleccion.split(/[\\/]/).pop() ?? "Carpeta importada";
@@ -1879,7 +1904,7 @@ function finalizar_carga(total: number): void {
   const progreso = document.querySelector<HTMLProgressElement>("#carga-progreso");
   if (!interfaz || !estado || !progreso) return;
   progreso.value = 100;
-  estado.textContent = total > 0 ? `${total} elemento${total === 1 ? "" : "s"} añadido${total === 1 ? "" : "s"}` : "No se encontraron PDF o EPUB";
+  estado.textContent = total > 0 ? `${total} elemento${total === 1 ? "" : "s"} añadido${total === 1 ? "" : "s"}` : "No se encontraron PDF, EPUB o Markdown";
   window.setTimeout(() => { interfaz.hidden = true; }, 1200);
 }
 
@@ -2101,7 +2126,7 @@ function montar_aplicacion(): void {
   if (!aplicacion) return;
   aplicacion.innerHTML = `<div class="aplicacion"><header class="barra-superior">
     <nav class="pestanas" aria-label="Documentos abiertos"><button class="pestana activa" data-vista="biblioteca">Biblioteca</button><span id="pestanas-documentos" class="pestanas-documentos" role="tablist"></span></nav>
-    <div class="acciones-superiores"><button id="modo-enfoque" class="boton">Modo lectura</button><input id="archivo" class="oculto" type="file" accept=".pdf,.epub" multiple><input id="carpeta" class="oculto" type="file" accept=".pdf,.epub" webkitdirectory multiple></div><div class="busqueda-global" role="search" aria-label="Buscar en la vista actual" hidden><input id="busqueda-global" type="search" placeholder="Buscar" aria-label="Texto que buscar"><span id="estado-busqueda-global" aria-live="polite"></span><button id="busqueda-anterior" aria-label="Resultado anterior">↑</button><button id="busqueda-siguiente" aria-label="Resultado siguiente">↓</button><button id="cerrar-busqueda-global" aria-label="Cerrar búsqueda">×</button></div></header>
+    <div class="acciones-superiores"><button id="modo-enfoque" class="boton">Modo lectura</button><input id="archivo" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" multiple><input id="carpeta" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" webkitdirectory multiple></div><div class="busqueda-global" role="search" aria-label="Buscar en la vista actual" hidden><input id="busqueda-global" type="search" placeholder="Buscar" aria-label="Texto que buscar"><span id="estado-busqueda-global" aria-live="polite"></span><button id="busqueda-anterior" aria-label="Resultado anterior">↑</button><button id="busqueda-siguiente" aria-label="Resultado siguiente">↓</button><button id="cerrar-busqueda-global" aria-label="Cerrar búsqueda">×</button></div></header>
     <div class="contenido"><aside id="panel-biblioteca" class="panel"><button id="alternar-panel-biblioteca" class="flecha-panel flecha-panel-izquierda" aria-label="Ocultar biblioteca">‹</button><div class="panel-contenido"><div class="pestanas-panel"><button class="activo" data-pestana-izquierda="biblioteca">Biblioteca</button><button data-pestana-izquierda="indice">Índice</button></div><div id="contenido-biblioteca"><section class="panel-seccion"><div class="encabezado-panel"><h2 class="panel-titulo">Organización</h2><button id="abrir-menu-agregar" class="agregar-biblioteca" aria-label="Añadir a biblioteca" title="Añadir a biblioteca">+</button></div><nav id="navegacion-biblioteca" class="navegacion"></nav></section>
     <section class="panel-seccion"><h2 class="panel-titulo">Carpetas</h2><nav id="carpetas-biblioteca" class="navegacion"></nav></section></div><section id="contenido-indice" class="panel-seccion" hidden></section>
     </div></aside><section id="vista-principal" class="vista-principal"></section><aside id="panel-inspector" class="panel panel-derecho"><button id="alternar-panel-inspector" class="flecha-panel flecha-panel-derecha" aria-label="Ocultar panel lateral">›</button><div class="panel-contenido"><div class="pestanas-panel"><button class="activo" data-pestana-derecha="fragmentos">Libreta</button><button data-pestana-derecha="perfil">Configuración</button></div><div id="contenido-perfil" hidden><details class="panel-seccion grupo-configuracion"><summary>Apariencia</summary><div class="contenido-grupo-configuracion">
@@ -2309,7 +2334,7 @@ function montar_aplicacion(): void {
   if (es_interfaz_movil()) perfil_actual = normalizar_perfil({ ...perfil_actual, componentes: { ...perfil_actual.componentes, biblioteca: false, inspector: false } });
   aplicar_perfil(); renderizar_panel_izquierdo(); renderizar_panel_fragmentos(); renderizar_biblioteca(); actualizar_panel_perfil(); actualizar_controles(); renderizar_pestanas_documentos();
   void actualizar_estado_kokoro();
-  void cargar_biblioteca_nativa();
+  void inicializar_apertura_archivos_nativa().catch((error) => informar_error("Apertura de documentos", error));
   if (!isTauri() && sesion_pestanas.activa) void abrir_documento(sesion_pestanas.activa);
 }
 

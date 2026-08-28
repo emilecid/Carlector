@@ -23,7 +23,27 @@
     ],
     "targets": ["app", "dmg", "appimage"],
     "category": "Education",
-    "shortDescription": "Carlector, lector local asistido para PDF y EPUB",
+    "shortDescription": "Carlector, lector local asistido para PDF, EPUB y Markdown",
+    "fileAssociations": [
+      {
+        "ext": ["pdf"],
+        "contentTypes": ["com.adobe.pdf"],
+        "name": "Documento PDF",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["epub"],
+        "contentTypes": ["org.idpf.epub-container"],
+        "name": "Libro EPUB",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["md", "markdown"],
+        "contentTypes": ["net.daringfireball.markdown"],
+        "name": "Documento Markdown",
+        "role": "Viewer"
+      }
+    ],
     "macOS": {
       "signingIdentity": "-",
       "entitlements": "Entitlements.plist"
