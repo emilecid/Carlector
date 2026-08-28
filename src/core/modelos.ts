@@ -94,6 +94,24 @@ export interface TemaInterfaz {
   personalizado?: boolean;
 }
 
+export interface ComponentesInterfaz {
+  biblioteca: boolean;
+  inspector: boolean;
+  controles: boolean;
+  barra_superior: boolean;
+  pestanas: boolean;
+  herramientas_pdf: boolean;
+  acceso_libreta: boolean;
+}
+
+export interface DisposicionInterfaz {
+  ancho_biblioteca: number;
+  ancho_inspector: number;
+  alto_barra_superior: number;
+  alto_controles: number;
+  escala_controles: number;
+}
+
 export interface PerfilLectura {
   id: string;
   nombre: string;
@@ -114,7 +132,8 @@ export interface PerfilLectura {
   motor_voz: "sistema" | "kokoro_onnx";
   idioma_voz: string;
   voz_base: string;
-  componentes: { biblioteca: boolean; inspector: boolean; controles: boolean };
+  componentes: ComponentesInterfaz;
+  disposicion: DisposicionInterfaz;
   atajos: AtajosLectura;
   colores: ColoresInterfaz;
 }

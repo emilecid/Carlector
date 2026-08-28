@@ -14,7 +14,7 @@ import { abrir_pestana, ajustar_proporciones_paneles, cerrar_pestana, normalizar
 import { resolver_control_paquete_voz } from "./core/interfaz_voz.ts";
 import { crear_informe_error } from "./core/informador_errores.ts";
 import { crear_exportacion_libreta, crear_html_exportacion_libreta } from "./core/libreta.ts";
-import { ajustar_palabras_por_minuto, ajustar_velocidad, clases_visibilidad_paneles, TEMAS_PREDEFINIDOS, normalizar_perfil } from "./core/perfiles.ts";
+import { ajustar_palabras_por_minuto, ajustar_velocidad, clases_visibilidad_paneles, combinar_componentes_documento, PERFIL_PREDETERMINADO, TEMAS_PREDEFINIDOS, normalizar_perfil } from "./core/perfiles.ts";
 import { segmentar_bloques, segmentar_texto } from "./core/segmentacion.ts";
 import { agrupar_locuciones, indice_locucion_en_posicion } from "./core/tts.ts";
 import { ajustar_zoom_pdf, cambio_zoom_gesto_pdf, indice_de_punto_pdf, indice_de_seleccion_pdf, indice_inicial_pagina, mapear_fragmentos_pdf, pagina_de_fragmento, rango_relativo_fragmento_pdf, rango_relativo_unidad_pdf, rango_textual_unidad_pdf, resolver_pagina_pdf, type RangoTextoPdf } from "./core/visor_pdf.ts";
@@ -192,15 +192,26 @@ function cerrar_modal(selector: string): void {
 }
 
 function aplicar_perfil(): void {
-  document.documentElement.style.setProperty("--fuente-lectura", perfil_actual.fuente);
-  document.documentElement.style.setProperty("--tamano-lectura", `${perfil_actual.tamano_fuente}px`);
-  document.documentElement.style.setProperty("--interlineado", String(perfil_actual.interlineado));
-  document.documentElement.style.setProperty("--ancho-lectura", `${perfil_actual.ancho_lectura}px`);
-  Object.entries(perfil_actual.colores).forEach(([nombre, color]) => document.documentElement.style.setProperty(`--${nombre}`, color));
+  const raiz = document.documentElement;
+  raiz.style.setProperty("--fuente-lectura", perfil_actual.fuente);
+  raiz.style.setProperty("--tamano-lectura", `${perfil_actual.tamano_fuente}px`);
+  raiz.style.setProperty("--interlineado", String(perfil_actual.interlineado));
+  raiz.style.setProperty("--ancho-lectura", `${perfil_actual.ancho_lectura}px`);
+  raiz.style.setProperty("--ancho-panel-izquierdo", `${perfil_actual.disposicion.ancho_biblioteca}px`);
+  raiz.style.setProperty("--ancho-panel-derecho", `${perfil_actual.disposicion.ancho_inspector}px`);
+  raiz.style.setProperty("--alto-cabecera", `${perfil_actual.disposicion.alto_barra_superior}px`);
+  raiz.style.setProperty("--alto-reproductor", `${perfil_actual.disposicion.alto_controles}px`);
+  raiz.style.setProperty("--escala-controles", String(perfil_actual.disposicion.escala_controles));
+  Object.entries(perfil_actual.colores).forEach(([nombre, color]) => raiz.style.setProperty(`--${nombre}`, color));
   document.body.classList.toggle("modo-oscuro", perfil_actual.tema === "oscuro");
   document.body.classList.toggle("modo-enfoque", perfil_actual.modo_enfoque);
-  document.body.classList.remove("sin-panel-biblioteca", "sin-panel-inspector");
+  document.body.classList.remove("sin-panel-biblioteca", "sin-panel-inspector", "sin-barra-superior", "sin-pestanas", "sin-controles", "sin-herramientas-pdf", "sin-acceso-libreta");
   document.body.classList.add(...clases_visibilidad_paneles(perfil_actual.componentes));
+  document.body.classList.toggle("sin-barra-superior", !perfil_actual.componentes.barra_superior);
+  document.body.classList.toggle("sin-pestanas", !perfil_actual.componentes.pestanas);
+  document.body.classList.toggle("sin-controles", !perfil_actual.componentes.controles);
+  document.body.classList.toggle("sin-herramientas-pdf", !perfil_actual.componentes.herramientas_pdf);
+  document.body.classList.toggle("sin-acceso-libreta", !perfil_actual.componentes.acceso_libreta);
   const boton_biblioteca = document.querySelector<HTMLButtonElement>("#alternar-panel-biblioteca");
   const boton_inspector = document.querySelector<HTMLButtonElement>("#alternar-panel-inspector");
   if (boton_biblioteca) {
@@ -1035,7 +1046,11 @@ function guardar_desplazamiento_panel_secundario(id: string, desplazamiento: num
     indice_unidad: documento.estado_lectura?.indice_unidad ?? 0,
     desplazamiento: Math.max(0, desplazamiento),
     modo_visual_pdf: documento.estado_lectura?.modo_visual_pdf ?? "texto",
-    componentes: documento.estado_lectura?.componentes ?? { ...perfil_actual.componentes },
+    componentes: documento.estado_lectura?.componentes ?? {
+      biblioteca: perfil_actual.componentes.biblioteca,
+      inspector: perfil_actual.componentes.inspector,
+      controles: perfil_actual.componentes.controles,
+    },
   };
   documentos = documentos.map((actual) => actual.id === id ? { ...actual, estado_lectura } : actual);
   persistencia.guardarDocumentos(documentos);
@@ -1578,7 +1593,11 @@ function crear_estado_lectura_actual(): EstadoLecturaDocumento {
     indice_unidad: Math.max(0, perfil_actual.modo_lectura === "rsvp" ? indice_unidad_rsvp : indice_unidad_pdf),
     desplazamiento: Math.max(0, contenedor?.scrollTop ?? 0),
     modo_visual_pdf,
-    componentes: { ...perfil_actual.componentes },
+    componentes: {
+      biblioteca: perfil_actual.componentes.biblioteca,
+      inspector: perfil_actual.componentes.inspector,
+      controles: perfil_actual.componentes.controles,
+    },
   };
 }
 
@@ -1602,7 +1621,7 @@ function aplicar_estado_lectura(documento: DocumentoBiblioteca): void {
   modo_visual_pdf = documento.formato === "PDF" && (estado?.modo_visual_pdf === "original" || estado?.modo_visual_pdf === "doble") ? estado.modo_visual_pdf : "texto";
   desplazamiento_pendiente = estado ? Math.max(0, estado.desplazamiento) : 0;
   if (estado?.componentes) {
-    perfil_actual = normalizar_perfil({ ...perfil_actual, componentes: estado.componentes });
+    perfil_actual = normalizar_perfil({ ...perfil_actual, componentes: combinar_componentes_documento(perfil_actual.componentes, estado.componentes) });
     aplicar_perfil();
   }
 }
@@ -2055,6 +2074,7 @@ function actualizar_perfil(cambios: Parameters<typeof normalizar_perfil>[0]): vo
     ...perfil_actual,
     ...cambios,
     componentes: cambios.componentes ? { ...perfil_actual.componentes, ...cambios.componentes } : perfil_actual.componentes,
+    disposicion: cambios.disposicion ? { ...perfil_actual.disposicion, ...cambios.disposicion } : perfil_actual.disposicion,
     atajos: cambios.atajos ? { ...perfil_actual.atajos, ...cambios.atajos } : perfil_actual.atajos,
     colores: cambios.colores ? { ...perfil_actual.colores, ...cambios.colores } : perfil_actual.colores,
   });
@@ -2073,6 +2093,27 @@ function actualizar_panel_perfil(): void {
   const velocidad = document.querySelector<HTMLElement>("#valor-velocidad");
   if (tamano) tamano.textContent = `${perfil_actual.tamano_fuente}px`;
   if (velocidad) velocidad.textContent = `${perfil_actual.velocidad.toFixed(1)}×`;
+  document.querySelectorAll<HTMLButtonElement>("[data-componente-interfaz]").forEach((boton) => {
+    const componente = boton.dataset.componenteInterfaz as keyof PerfilLectura["componentes"];
+    const visible = perfil_actual.componentes[componente];
+    boton.setAttribute("aria-pressed", String(visible));
+    boton.setAttribute("aria-label", `${visible ? "Ocultar" : "Mostrar"} ${boton.dataset.etiqueta ?? "elemento"}`);
+    const estado = boton.querySelector<HTMLElement>(".estado-componente");
+    if (estado) estado.textContent = visible ? "Visible" : "Oculto";
+  });
+  const controles_disposicion: Array<[string, keyof PerfilLectura["disposicion"], (valor: number) => string]> = [
+    ["ancho-biblioteca", "ancho_biblioteca", (valor) => `${valor}px`],
+    ["ancho-inspector", "ancho_inspector", (valor) => `${valor}px`],
+    ["alto-barra-superior", "alto_barra_superior", (valor) => `${valor}px`],
+    ["alto-controles", "alto_controles", (valor) => `${valor}px`],
+    ["escala-controles", "escala_controles", (valor) => `${Math.round(valor * 100)}%`],
+  ];
+  controles_disposicion.forEach(([id, propiedad, formatear]) => {
+    const control = document.querySelector<HTMLInputElement>(`#${id}`);
+    const salida = document.querySelector<HTMLElement>(`#valor-${id}`);
+    if (control) control.value = String(perfil_actual.disposicion[propiedad]);
+    if (salida) salida.textContent = formatear(perfil_actual.disposicion[propiedad]);
+  });
   document.querySelectorAll<HTMLInputElement>("[data-atajo]").forEach((control) => {
     const accion = control.dataset.atajo as AccionAtajo;
     control.value = describir_atajo(perfil_actual.atajos[accion]);
@@ -2098,6 +2139,22 @@ function actualizar_panel_perfil(): void {
     }
     voz.value = configuracion.voz;
   }
+}
+
+function crear_controles_interfaz(): string {
+  const componentes: Array<[keyof PerfilLectura["componentes"], string]> = [
+    ["biblioteca", "Biblioteca"],
+    ["inspector", "Libreta y configuración"],
+    ["barra_superior", "Barra superior"],
+    ["pestanas", "Pestañas"],
+    ["controles", "Controles de lectura"],
+    ["herramientas_pdf", "Herramientas PDF"],
+    ["acceso_libreta", "Acceso a Libreta flotante"],
+  ];
+  return componentes.map(([componente, etiqueta]) => {
+    const visible = perfil_actual.componentes[componente] as boolean;
+    return `<button class="boton-visibilidad-interfaz" type="button" data-componente-interfaz="${componente}" data-etiqueta="${etiqueta}" aria-pressed="${perfil_actual.componentes[componente] as boolean}" aria-label="${visible ? "Ocultar" : "Mostrar"} ${etiqueta}"><span class="icono-ojo" aria-hidden="true"></span><span>${etiqueta}</span><small class="estado-componente">${visible ? "Visible" : "Oculto"}</small></button>`;
+  }).join("");
 }
 
 function actualizar_idioma_kokoro(idioma: string): void {
@@ -2258,7 +2315,15 @@ function montar_aplicacion(): void {
     <div class="acciones-superiores"><button id="modo-enfoque" class="boton">Modo lectura</button><input id="archivo" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" multiple><input id="carpeta" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" webkitdirectory multiple></div><div class="busqueda-global" role="search" aria-label="Buscar en la vista actual" hidden><input id="busqueda-global" type="search" placeholder="Buscar" aria-label="Texto que buscar"><span id="estado-busqueda-global" aria-live="polite"></span><button id="busqueda-anterior" aria-label="Resultado anterior">↑</button><button id="busqueda-siguiente" aria-label="Resultado siguiente">↓</button><button id="cerrar-busqueda-global" aria-label="Cerrar búsqueda">×</button></div></header>
     <div class="contenido"><aside id="panel-biblioteca" class="panel"><button id="alternar-panel-biblioteca" class="flecha-panel flecha-panel-izquierda" aria-label="Ocultar biblioteca">‹</button><div class="panel-contenido"><div class="pestanas-panel"><button class="activo" data-pestana-izquierda="biblioteca">Biblioteca</button><button data-pestana-izquierda="indice">Índice</button></div><div id="contenido-biblioteca"><section class="panel-seccion"><div class="encabezado-panel"><h2 class="panel-titulo">Organización</h2><button id="abrir-menu-agregar" class="agregar-biblioteca" aria-label="Añadir a biblioteca" title="Añadir a biblioteca">+</button></div><nav id="navegacion-biblioteca" class="navegacion"></nav></section>
     <section class="panel-seccion"><h2 class="panel-titulo">Carpetas</h2><nav id="carpetas-biblioteca" class="navegacion"></nav></section></div><section id="contenido-indice" class="panel-seccion" hidden></section>
-    </div></aside><section id="vista-principal" class="vista-principal"></section><aside id="panel-inspector" class="panel panel-derecho"><button id="alternar-panel-inspector" class="flecha-panel flecha-panel-derecha" aria-label="Ocultar panel lateral">›</button><div class="panel-contenido"><div class="pestanas-panel"><button class="activo" data-pestana-derecha="fragmentos">Libreta</button><button data-pestana-derecha="perfil">Configuración</button></div><div id="contenido-perfil" hidden><details class="panel-seccion grupo-configuracion"><summary>Apariencia</summary><div class="contenido-grupo-configuracion">
+    </div></aside><section id="vista-principal" class="vista-principal"></section><aside id="panel-inspector" class="panel panel-derecho"><button id="alternar-panel-inspector" class="flecha-panel flecha-panel-derecha" aria-label="Ocultar panel lateral">›</button><div class="panel-contenido"><div class="pestanas-panel"><button class="activo" data-pestana-derecha="fragmentos">Libreta</button><button data-pestana-derecha="perfil">Configuración</button></div><div id="contenido-perfil" hidden><details class="panel-seccion grupo-configuracion" open><summary>Interfaz</summary><div class="contenido-grupo-configuracion">
+    <div class="lista-visibilidad-interfaz" aria-label="Elementos visibles">${crear_controles_interfaz()}</div>
+    <fieldset class="dimensiones-interfaz"><legend>Dimensiones</legend>
+    <div class="campo"><div class="campo-linea"><label for="ancho-biblioteca">Ancho Biblioteca</label><output id="valor-ancho-biblioteca"></output></div><input id="ancho-biblioteca" data-disposicion-interfaz="ancho_biblioteca" type="range" min="180" max="420" step="1"></div>
+    <div class="campo"><div class="campo-linea"><label for="ancho-inspector">Ancho Libreta</label><output id="valor-ancho-inspector"></output></div><input id="ancho-inspector" data-disposicion-interfaz="ancho_inspector" type="range" min="220" max="480" step="1"></div>
+    <div class="campo"><div class="campo-linea"><label for="alto-barra-superior">Alto barra superior</label><output id="valor-alto-barra-superior"></output></div><input id="alto-barra-superior" data-disposicion-interfaz="alto_barra_superior" type="range" min="48" max="88" step="1"></div>
+    <div class="campo"><div class="campo-linea"><label for="alto-controles">Alto controles</label><output id="valor-alto-controles"></output></div><input id="alto-controles" data-disposicion-interfaz="alto_controles" type="range" min="56" max="120" step="1"></div>
+    <div class="campo"><div class="campo-linea"><label for="escala-controles">Tamaño controles</label><output id="valor-escala-controles"></output></div><input id="escala-controles" data-disposicion-interfaz="escala_controles" type="range" min="0.8" max="1.35" step="0.05"></div>
+    </fieldset><button id="restaurar-interfaz" class="boton" type="button">Restaurar interfaz</button><p id="estado-interfaz" class="ayuda-campo" role="status"></p></div></details><details class="panel-seccion grupo-configuracion"><summary>Apariencia</summary><div class="contenido-grupo-configuracion">
     <div class="campo"><div class="encabezado-campo"><label>Temas</label><button id="abrir-biblioteca-temas" class="boton-biblioteca-temas" aria-label="Abrir biblioteca de temas" title="Biblioteca de temas">▦</button></div><div class="temas-predefinidos"><button data-tema-preset="diurno">Diurno</button><button data-tema-preset="nocturno">Nocturno</button><button data-tema-preset="sepia">Sepia</button><button data-tema-preset="contraste">Contraste</button></div></div>
     <div class="campo"><label>Colores personalizados</label><div class="colores-personalizados">${Object.entries(perfil_actual.colores).map(([nombre, valor]) => `<label>${nombre}<input type="color" data-color-interfaz="${nombre}" value="${valor}"></label>`).join("")}</div></div>
     <div class="campo"><div class="campo-linea"><label for="tamano">Tamaño</label><span id="valor-tamano"></span></div><input id="tamano" type="range" min="12" max="40" value="${perfil_actual.tamano_fuente}"></div></div></details>
@@ -2351,6 +2416,19 @@ function montar_aplicacion(): void {
   document.querySelector("#crear-carpeta")?.addEventListener("click", () => { document.querySelector<HTMLElement>("#menu-agregar")?.setAttribute("hidden", ""); void crear_carpeta_biblioteca(); });
   document.querySelector("#alternar-panel-biblioteca")?.addEventListener("click", () => actualizar_perfil({ componentes: { biblioteca: !perfil_actual.componentes.biblioteca, ...(es_interfaz_movil() ? { inspector: false } : {}) } }));
   document.querySelector("#alternar-panel-inspector")?.addEventListener("click", () => actualizar_perfil({ componentes: { inspector: !perfil_actual.componentes.inspector, ...(es_interfaz_movil() ? { biblioteca: false } : {}) } }));
+  document.querySelectorAll<HTMLButtonElement>("[data-componente-interfaz]").forEach((boton) => boton.addEventListener("click", () => {
+    const componente = boton.dataset.componenteInterfaz as keyof PerfilLectura["componentes"];
+    actualizar_perfil({ componentes: { [componente]: !perfil_actual.componentes[componente] } });
+  }));
+  document.querySelectorAll<HTMLInputElement>("[data-disposicion-interfaz]").forEach((control) => control.addEventListener("input", () => {
+    const propiedad = control.dataset.disposicionInterfaz as keyof PerfilLectura["disposicion"];
+    actualizar_perfil({ disposicion: { [propiedad]: Number(control.value) } });
+  }));
+  document.querySelector("#restaurar-interfaz")?.addEventListener("click", () => {
+    actualizar_perfil({ componentes: { ...PERFIL_PREDETERMINADO.componentes }, disposicion: { ...PERFIL_PREDETERMINADO.disposicion } });
+    const estado = document.querySelector<HTMLElement>("#estado-interfaz");
+    if (estado) estado.textContent = "Interfaz restaurada.";
+  });
   document.querySelector("#salir-modo-enfoque")?.addEventListener("click", () => actualizar_perfil({ modo_enfoque: false }));
   document.querySelector("#abrir-libreta-flotante")?.addEventListener("click", abrir_libreta_flotante);
   document.querySelector("#cerrar-libreta-flotante")?.addEventListener("click", cerrar_libreta_flotante);

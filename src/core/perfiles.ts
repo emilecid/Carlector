@@ -1,4 +1,4 @@
-import type { ColoresInterfaz, PerfilLectura } from "./modelos";
+import type { ColoresInterfaz, ComponentesInterfaz, DisposicionInterfaz, PerfilLectura } from "./modelos";
 import { ATAJOS_PREDETERMINADOS, normalizar_atajos } from "./atajos.ts";
 
 export const TEMAS_PREDEFINIDOS: Record<string, { tema: PerfilLectura["tema"]; colores: ColoresInterfaz }> = {
@@ -28,13 +28,29 @@ export const PERFIL_PREDETERMINADO: PerfilLectura = {
   motor_voz: "sistema",
   idioma_voz: "es",
   voz_base: "af_heart",
-  componentes: { biblioteca: true, inspector: true, controles: true },
+  componentes: {
+    biblioteca: true,
+    inspector: true,
+    controles: true,
+    barra_superior: true,
+    pestanas: true,
+    herramientas_pdf: true,
+    acceso_libreta: true,
+  },
+  disposicion: {
+    ancho_biblioteca: 236,
+    ancho_inspector: 286,
+    alto_barra_superior: 58,
+    alto_controles: 76,
+    escala_controles: 1,
+  },
   atajos: ATAJOS_PREDETERMINADOS,
   colores: TEMAS_PREDEFINIDOS.diurno!.colores,
 };
 
-export type PerfilLecturaParcial = Omit<Partial<PerfilLectura>, "componentes" | "colores" | "atajos" | "unidad_rsvp"> & {
+export type PerfilLecturaParcial = Omit<Partial<PerfilLectura>, "componentes" | "disposicion" | "colores" | "atajos" | "unidad_rsvp"> & {
   componentes?: Partial<PerfilLectura["componentes"]>;
+  disposicion?: Partial<PerfilLectura["disposicion"]>;
   colores?: Partial<PerfilLectura["colores"]>;
   atajos?: Partial<PerfilLectura["atajos"]>;
   estrategia_segmentacion?: unknown;
@@ -42,6 +58,21 @@ export type PerfilLecturaParcial = Omit<Partial<PerfilLectura>, "componentes" | 
   palabras_rsvp?: unknown;
   unidad_rsvp?: unknown;
 };
+
+function limitar(numero: unknown, minimo: number, maximo: number, alternativa: number): number {
+  const valor = Number(numero);
+  return Number.isFinite(valor) ? Math.min(maximo, Math.max(minimo, valor)) : alternativa;
+}
+
+export function normalizar_disposicion(valor: Partial<DisposicionInterfaz> | undefined): DisposicionInterfaz {
+  return {
+    ancho_biblioteca: limitar(valor?.ancho_biblioteca, 180, 420, PERFIL_PREDETERMINADO.disposicion.ancho_biblioteca),
+    ancho_inspector: limitar(valor?.ancho_inspector, 220, 480, PERFIL_PREDETERMINADO.disposicion.ancho_inspector),
+    alto_barra_superior: limitar(valor?.alto_barra_superior, 48, 88, PERFIL_PREDETERMINADO.disposicion.alto_barra_superior),
+    alto_controles: limitar(valor?.alto_controles, 56, 120, PERFIL_PREDETERMINADO.disposicion.alto_controles),
+    escala_controles: limitar(valor?.escala_controles, 0.8, 1.35, PERFIL_PREDETERMINADO.disposicion.escala_controles),
+  };
+}
 
 function normalizar_color(valor: unknown, alternativa: string): string {
   return typeof valor === "string" && /^#[0-9a-f]{6}$/i.test(valor) ? valor.toLowerCase() : alternativa;
@@ -54,6 +85,13 @@ export function clases_visibilidad_paneles(
     componentes.biblioteca ? null : "sin-panel-biblioteca",
     componentes.inspector ? null : "sin-panel-inspector",
   ].filter((clase): clase is string => clase !== null);
+}
+
+export function combinar_componentes_documento(
+  actuales: ComponentesInterfaz,
+  estado: Pick<ComponentesInterfaz, "biblioteca" | "inspector" | "controles">,
+): ComponentesInterfaz {
+  return { ...actuales, ...estado };
 }
 
 export function ajustar_velocidad(velocidad: number, cambio: number): number {
@@ -86,6 +124,7 @@ export function normalizar_perfil(valor: PerfilLecturaParcial): PerfilLectura {
     idioma_voz: typeof vigente.idioma_voz === "string" && vigente.idioma_voz.trim() ? vigente.idioma_voz.trim() : PERFIL_PREDETERMINADO.idioma_voz,
     voz_base: typeof vigente.voz_base === "string" && vigente.voz_base.trim() ? vigente.voz_base.trim() : PERFIL_PREDETERMINADO.voz_base,
     componentes: { ...PERFIL_PREDETERMINADO.componentes, ...vigente.componentes },
+    disposicion: normalizar_disposicion(vigente.disposicion),
     atajos: normalizar_atajos(vigente.atajos),
     colores: Object.fromEntries(Object.entries(colores_base).map(([clave, alternativa]) => [clave, normalizar_color(vigente.colores?.[clave as keyof ColoresInterfaz], alternativa)])) as unknown as ColoresInterfaz,
   };
