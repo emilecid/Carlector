@@ -37,6 +37,17 @@ export interface LocucionPlanificada {
   texto: string;
 }
 
+export interface TramoLocucion {
+  indice: number;
+  inicio: number;
+  fin: number;
+}
+
+export interface GrupoLocuciones {
+  texto: string;
+  tramos: TramoLocucion[];
+}
+
 export function planificar_locuciones(fragmentos: FragmentoLectura[], indice_inicial: number, limite = Number.POSITIVE_INFINITY): LocucionPlanificada[] {
   const resultado: LocucionPlanificada[] = [];
   for (let indice = Math.max(0, indice_inicial); indice < fragmentos.length && resultado.length < limite; indice += 1) {
@@ -44,6 +55,32 @@ export function planificar_locuciones(fragmentos: FragmentoLectura[], indice_ini
     if (texto) resultado.push({ indice, texto });
   }
   return resultado;
+}
+
+export function agrupar_locuciones(fragmentos: FragmentoLectura[], indice_inicial: number, maximo_caracteres = 900, maximo_fragmentos = 8): GrupoLocuciones {
+  const partes: string[] = [];
+  const tramos: TramoLocucion[] = [];
+  let longitud = 0;
+  for (let indice = Math.max(0, indice_inicial); indice < fragmentos.length && tramos.length < maximo_fragmentos; indice += 1) {
+    const texto = fragmentos[indice]?.locucion?.trim();
+    if (!texto) continue;
+    const separador = partes.length ? 1 : 0;
+    if (partes.length && longitud + separador + texto.length > maximo_caracteres) break;
+    const inicio = longitud + separador;
+    partes.push(texto);
+    longitud = inicio + texto.length;
+    tramos.push({ indice, inicio, fin: longitud });
+  }
+  return { texto: partes.join(" "), tramos };
+}
+
+export function indice_locucion_en_posicion(tramos: TramoLocucion[], posicion: number): number | null {
+  let tramo_actual: TramoLocucion | undefined;
+  for (const tramo of tramos) {
+    if (posicion < tramo.inicio) break;
+    tramo_actual = tramo;
+  }
+  return tramo_actual?.indice ?? tramos[0]?.indice ?? null;
 }
 
 export function normalizar_configuracion_voz(

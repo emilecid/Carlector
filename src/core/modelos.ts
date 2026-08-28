@@ -7,6 +7,7 @@ export interface FragmentoLectura {
   visible: string;
   locucion: string | null;
   tipo: TipoFragmento;
+  pagina?: number;
   bloque_id?: string;
   estructura?: EstructuraDocumento;
   nivel?: number;
@@ -29,6 +30,16 @@ export interface DocumentoBiblioteca {
   ultima_lectura: string | null;
   carpeta_id?: string | null;
   orden?: number;
+  estado_lectura?: EstadoLecturaDocumento | null;
+}
+
+export interface EstadoLecturaDocumento {
+  indice_fragmento: number;
+  pagina: number;
+  indice_unidad: number;
+  desplazamiento: number;
+  modo_visual_pdf: "texto" | "original" | "doble";
+  componentes: { biblioteca: boolean; inspector: boolean; controles: boolean };
 }
 
 export interface CarpetaBiblioteca {
@@ -51,6 +62,13 @@ export interface FragmentoGuardado {
   creado: string;
   destacado?: boolean;
   ancla?: { bloque_id: string; inicio: number; fin: number };
+}
+
+export interface NotaDocumento {
+  id: string;
+  documento_id: string;
+  texto: string;
+  creado: string;
 }
 
 export interface ColoresInterfaz {
@@ -85,16 +103,31 @@ export interface PerfilLectura {
   auto_scroll: boolean;
   modo_enfoque: boolean;
   politica_matematica: PoliticaMatematica;
+  saltar_citas: boolean;
   modo_lectura: "continua" | "rsvp";
-  unidad_rsvp: "palabra" | "frase_corta";
-  palabras_rsvp: number;
+  unidad_rsvp: "palabra" | "frase";
   palabras_por_minuto: number;
-  estrategia_segmentacion: "cinco_palabras" | "puntuacion";
-  maximo_palabras_segmento: number;
   voz_habilitada: boolean;
   motor_voz: "sistema" | "kokoro_onnx";
   idioma_voz: string;
   voz_base: string;
   componentes: { biblioteca: boolean; inspector: boolean; controles: boolean };
+  atajos: AtajosLectura;
   colores: ColoresInterfaz;
+}
+
+export interface AtajoTeclado {
+  code: string;
+  meta: boolean;
+  alt: boolean;
+  shift: boolean;
+}
+
+export interface AtajosLectura {
+  buscar: AtajoTeclado;
+  reproducir: AtajoTeclado;
+  anterior: AtajoTeclado;
+  siguiente: AtajoTeclado;
+  modo_enfoque: AtajoTeclado;
+  alternar_pdf: AtajoTeclado;
 }

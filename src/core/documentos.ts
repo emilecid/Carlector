@@ -22,6 +22,7 @@ export interface DocumentoProcesado {
   bloques: BloqueDocumento[];
   indice: EntradaIndice[];
   portada?: string;
+  total_paginas?: number;
   version_cache?: number;
 }
 

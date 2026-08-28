@@ -25,7 +25,8 @@
     "category": "Education",
     "shortDescription": "Carlector, lector local asistido para PDF y EPUB",
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "entitlements": "Entitlements.plist"
     }
   }
 }

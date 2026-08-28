@@ -1,14 +1,19 @@
-import type { CarpetaBiblioteca, DocumentoBiblioteca, FragmentoGuardado, PerfilLectura, TemaInterfaz } from "../core/modelos";
+import type { CarpetaBiblioteca, DocumentoBiblioteca, FragmentoGuardado, NotaDocumento, PerfilLectura, TemaInterfaz } from "../core/modelos";
 import { PERFIL_PREDETERMINADO, normalizar_perfil } from "../core/perfiles";
+import type { SesionDivision, SesionPestanas } from "../core/pestanas.ts";
 
 const CLAVE_DOCUMENTOS = "lector.documentos.v1";
 const CLAVE_PERFIL = "lector.perfil.v1";
 const CLAVE_CARPETAS = "carlector.carpetas.v1";
 const CLAVE_FRAGMENTOS = "carlector.fragmentos.v1";
+const CLAVE_NOTAS = "carlector.notas.v1";
 const CLAVE_DESTACADOS = "carlector.fragmentos_destacados.v1";
 const CLAVE_TEMAS_PERSONALIZADOS = "carlector.temas_personalizados.v1";
 const CLAVE_REPOSITORIOS_VOZ = "carlector.repositorios_voz.v1";
 const CLAVE_INFORMES_ERROR = "carlector.informes_error.v1";
+const CLAVE_PESTANAS = "carlector.pestanas.v1";
+const CLAVE_DIVISION = "carlector.division.v1";
+const CLAVE_MINIATURAS_PDF = "carlector.miniaturas_pdf.v1";
 
 function leerJson<T>(clave: string, alternativa: T): T {
   try {
@@ -38,6 +43,12 @@ export const persistencia = {
   guardarFragmentos(fragmentos: FragmentoGuardado[]): void {
     localStorage.setItem(CLAVE_FRAGMENTOS, JSON.stringify(fragmentos));
   },
+  notas(): NotaDocumento[] {
+    return leerJson<NotaDocumento[]>(CLAVE_NOTAS, []);
+  },
+  guardarNotas(notas: NotaDocumento[]): void {
+    localStorage.setItem(CLAVE_NOTAS, JSON.stringify(notas));
+  },
   fragmentosDestacados(): boolean {
     return leerJson<boolean>(CLAVE_DESTACADOS, true);
   },
@@ -61,6 +72,24 @@ export const persistencia = {
   },
   guardarInformesError(habilitados: boolean): void {
     localStorage.setItem(CLAVE_INFORMES_ERROR, JSON.stringify(habilitados));
+  },
+  pestanas(): SesionPestanas {
+    return leerJson<SesionPestanas>(CLAVE_PESTANAS, { abiertas: [], activa: null });
+  },
+  guardarPestanas(sesion: SesionPestanas): void {
+    localStorage.setItem(CLAVE_PESTANAS, JSON.stringify(sesion));
+  },
+  division(): SesionDivision {
+    return leerJson<SesionDivision>(CLAVE_DIVISION, { documentos: [], proporciones: [100] });
+  },
+  guardarDivision(sesion: SesionDivision): void {
+    localStorage.setItem(CLAVE_DIVISION, JSON.stringify(sesion));
+  },
+  miniaturasPdf(): boolean {
+    return leerJson<boolean>(CLAVE_MINIATURAS_PDF, true);
+  },
+  guardarMiniaturasPdf(visibles: boolean): void {
+    localStorage.setItem(CLAVE_MINIATURAS_PDF, JSON.stringify(visibles));
   },
   perfil(): PerfilLectura {
     return normalizar_perfil(leerJson<Partial<PerfilLectura>>(CLAVE_PERFIL, PERFIL_PREDETERMINADO));

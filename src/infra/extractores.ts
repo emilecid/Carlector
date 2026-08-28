@@ -4,11 +4,12 @@ import { GlobalWorkerOptions, getDocument } from "pdfjs-dist/legacy/build/pdf.mj
 import url_trabajador_pdf from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
 
 import { clasificar_linea_pdf, type BloqueDocumento, type DocumentoProcesado } from "../core/documentos.ts";
+import { detectar_lineas_marginales_repetidas, type LineaMarginalPdf } from "../core/limpieza_pdf.ts";
 import type { EntradaIndice } from "../core/modelos.ts";
 import { clasificar_estructura_epub } from "./semantica_epub.ts";
 
 GlobalWorkerOptions.workerSrc = url_trabajador_pdf;
-const VERSION_CACHE_DOCUMENTO = 3;
+const VERSION_CACHE_DOCUMENTO = 5;
 
 interface ElementoTextoPdf {
   str: string;
@@ -48,24 +49,31 @@ function ceder_control_interfaz(): Promise<void> {
 export async function extraer_pdf(datos: ArrayBuffer, nombre_archivo: string, notificar?: NotificadorExtraccion): Promise<DocumentoProcesado> {
   const tarea = getDocument({ data: new Uint8Array(datos) });
   const pdf = await tarea.promise;
+  const total_paginas = pdf.numPages;
   const bloques: BloqueDocumento[] = [];
+  const lineas_extraidas: Array<LineaMarginalPdf & { fuentes: string[] }> = [];
   const metadata = await pdf.getMetadata().catch(() => null);
 
-  for (let numero_pagina = 1; numero_pagina <= pdf.numPages; numero_pagina += 1) {
+  for (let numero_pagina = 1; numero_pagina <= total_paginas; numero_pagina += 1) {
     const pagina = await pdf.getPage(numero_pagina);
     const contenido = await pagina.getTextContent({ disableNormalization: false });
+    const alto_pagina = pagina.getViewport({ scale: 1 }).height;
     const elementos = contenido.items.filter(es_elemento_texto_pdf) as ElementoTextoPdf[];
     const lineas = agrupar_lineas_pdf(elementos);
     for (const [indice, linea] of lineas.entries()) {
       const texto = linea.elementos.map((elemento) => elemento.str).join(" ").replace(/\s+/g, " ").trim();
       if (!texto) continue;
       const fuentes = linea.elementos.map((elemento) => elemento.fontName);
-      bloques.push({ id: `pagina-${numero_pagina}-linea-${indice}`, contenido: texto, tipo: clasificar_linea_pdf(texto, fuentes), pagina: numero_pagina });
+      lineas_extraidas.push({ id: `pagina-${numero_pagina}-linea-${indice}`, pagina: numero_pagina, texto, posicion_y: linea.posicion_y, alto_pagina, fuentes });
     }
     pagina.cleanup();
-    notificar?.(numero_pagina, pdf.numPages, "Extrayendo páginas");
+    notificar?.(numero_pagina, total_paginas, "Extrayendo páginas");
     await ceder_control_interfaz();
   }
+  const marginales = detectar_lineas_marginales_repetidas(lineas_extraidas);
+  lineas_extraidas.filter(({ id }) => !marginales.has(id)).forEach(({ id, pagina, texto, fuentes }) => {
+    bloques.push({ id, contenido: texto, tipo: clasificar_linea_pdf(texto, fuentes), pagina });
+  });
   const informacion = metadata?.info as { Title?: string; Author?: string } | undefined;
   const indice_documento: EntradaIndice[] = [];
   const esquema = await pdf.getOutline().catch(() => null);
@@ -89,6 +97,7 @@ export async function extraer_pdf(datos: ArrayBuffer, nombre_archivo: string, no
     formato: "PDF",
     bloques,
     indice: indice_documento,
+    total_paginas,
     version_cache: VERSION_CACHE_DOCUMENTO,
   };
 }

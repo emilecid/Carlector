@@ -1,6 +1,7 @@
 import type { DocumentoBiblioteca } from "./modelos.ts";
 
 export type FiltroBiblioteca =
+  | { tipo: "raiz" }
   | { tipo: "todos" }
   | { tipo: "en_progreso" }
   | { tipo: "carpeta"; carpeta_id: string };
@@ -27,6 +28,7 @@ export function filtrar_documentos(
   if (filtro.tipo === "carpeta") {
     return ordenados.filter(({ carpeta_id }) => carpeta_id === filtro.carpeta_id);
   }
+  if (filtro.tipo === "raiz") return ordenados.filter(({ carpeta_id }) => !carpeta_id);
   return ordenados;
 }
 

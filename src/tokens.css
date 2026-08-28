@@ -1,0 +1,29 @@
+:root {
+  --space-1: .25rem;
+  --space-2: .5rem;
+  --space-3: .75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --radius-control: .625rem;
+  --radius-card: 1rem;
+  --radius-panel: 1.25rem;
+  --text-xs: .6875rem;
+  --text-sm: .8125rem;
+  --text-md: 1rem;
+  --text-xl: 1.875rem;
+  --shadow-raised: 0 .5rem 1.5rem rgb(31 35 33 / 10%);
+  --shadow-elevated: 0 1.25rem 3.75rem rgb(31 35 33 / 18%);
+  --z-dropdown: 100;
+  --z-modal: 200;
+  --z-toast: 300;
+  --duration-fast: 140ms;
+  --ease-out: cubic-bezier(.2,.8,.2,1);
+  --color-canvas: var(--fondo);
+  --color-surface: var(--superficie);
+  --color-panel: var(--panel);
+  --color-border: var(--borde);
+  --color-text: var(--texto);
+  --color-text-muted: var(--atenuado);
+  --color-action: var(--acento);
+}

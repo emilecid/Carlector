@@ -30,6 +30,24 @@ pub struct Documento {
     pub ultima_lectura: Option<String>,
     pub carpeta_id: Option<String>,
     pub orden: i64,
+    pub estado_lectura: Option<EstadoLecturaDocumento>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EstadoLecturaDocumento {
+    pub indice_fragmento: i64,
+    pub pagina: i64,
+    pub indice_unidad: i64,
+    pub desplazamiento: f64,
+    pub modo_visual_pdf: String,
+    pub componentes: EstadoPanelesLectura,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EstadoPanelesLectura {
+    pub biblioteca: bool,
+    pub inspector: bool,
+    pub controles: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -49,6 +67,14 @@ pub struct FragmentoGuardado {
     pub destacado: bool,
     #[serde(default)]
     pub ancla: Option<AnclaFragmento>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NotaDocumento {
+    pub id: String,
+    pub documento_id: String,
+    pub texto: String,
+    pub creado: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -75,7 +101,8 @@ pub fn abrir_base_datos(ruta: &Path) -> Result<RepositorioBiblioteca, ErrorBibli
            progreso REAL NOT NULL DEFAULT 0 CHECK(progreso BETWEEN 0 AND 100),
            ultima_lectura TEXT,
            carpeta_id TEXT,
-           orden INTEGER NOT NULL DEFAULT 0
+           orden INTEGER NOT NULL DEFAULT 0,
+           estado_lectura_json TEXT
          );
          CREATE TABLE IF NOT EXISTS carpetas (
            id TEXT PRIMARY KEY,
@@ -92,6 +119,13 @@ pub fn abrir_base_datos(ruta: &Path) -> Result<RepositorioBiblioteca, ErrorBibli
            ancla_json TEXT
          );
          CREATE INDEX IF NOT EXISTS fragmentos_documento ON fragmentos_guardados(documento_id, indice_fragmento);
+         CREATE TABLE IF NOT EXISTS notas_documento (
+           id TEXT PRIMARY KEY,
+           documento_id TEXT NOT NULL,
+           texto TEXT NOT NULL CHECK(length(trim(texto)) > 0),
+           creado TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+         );
+         CREATE INDEX IF NOT EXISTS notas_por_documento ON notas_documento(documento_id, creado);
          CREATE TABLE IF NOT EXISTS cache_documentos (
            documento_id TEXT PRIMARY KEY,
            contenido TEXT NOT NULL,
@@ -101,6 +135,7 @@ pub fn abrir_base_datos(ruta: &Path) -> Result<RepositorioBiblioteca, ErrorBibli
     )?;
     migrar_columna(&conexion, "carpeta_id", "TEXT")?;
     migrar_columna(&conexion, "orden", "INTEGER NOT NULL DEFAULT 0")?;
+    migrar_columna(&conexion, "estado_lectura_json", "TEXT")?;
     migrar_columna_tabla(&conexion, "fragmentos_guardados", "destacado", "INTEGER NOT NULL DEFAULT 1")?;
     migrar_columna_tabla(&conexion, "fragmentos_guardados", "ancla_json", "TEXT")?;
     Ok(RepositorioBiblioteca { conexion })
@@ -178,7 +213,7 @@ impl RepositorioBiblioteca {
 
     pub fn listar_documentos(&self) -> Result<Vec<Documento>, ErrorBiblioteca> {
         let mut consulta = self.conexion.prepare(
-            "SELECT id, titulo, autor, formato, ruta, progreso, ultima_lectura, carpeta_id, orden
+            "SELECT id, titulo, autor, formato, ruta, progreso, ultima_lectura, carpeta_id, orden, estado_lectura_json
              FROM documentos ORDER BY orden, titulo COLLATE NOCASE",
         )?;
         let filas = consulta.query_map([], convertir_fila_documento)?;
@@ -231,6 +266,7 @@ impl RepositorioBiblioteca {
 
     pub fn eliminar_documento(&self, id: &str) -> Result<(), ErrorBiblioteca> {
         self.conexion.execute("DELETE FROM fragmentos_guardados WHERE documento_id = ?1", [id])?;
+        self.conexion.execute("DELETE FROM notas_documento WHERE documento_id = ?1", [id])?;
         self.conexion.execute("DELETE FROM cache_documentos WHERE documento_id = ?1", [id])?;
         self.conexion.execute("DELETE FROM documentos WHERE id = ?1", [id])?;
         Ok(())
@@ -283,15 +319,39 @@ impl RepositorioBiblioteca {
         Ok(())
     }
 
+    pub fn guardar_nota(&self, nota: &NotaDocumento) -> Result<(), ErrorBiblioteca> {
+        self.conexion.execute(
+            "INSERT OR REPLACE INTO notas_documento (id, documento_id, texto, creado) VALUES (?1, ?2, ?3, ?4)",
+            params![nota.id, nota.documento_id, nota.texto, nota.creado],
+        )?;
+        Ok(())
+    }
+
+    pub fn listar_notas(&self, documento_id: &str) -> Result<Vec<NotaDocumento>, ErrorBiblioteca> {
+        let mut consulta = self.conexion.prepare(
+            "SELECT id, documento_id, texto, creado FROM notas_documento WHERE documento_id = ?1 ORDER BY creado, id",
+        )?;
+        let filas = consulta.query_map([documento_id], |fila| Ok(NotaDocumento {
+            id: fila.get(0)?, documento_id: fila.get(1)?, texto: fila.get(2)?, creado: fila.get(3)?,
+        }))?;
+        filas.collect::<Result<Vec<_>, _>>().map_err(ErrorBiblioteca::from)
+    }
+
+    pub fn eliminar_nota(&self, id: &str) -> Result<(), ErrorBiblioteca> {
+        self.conexion.execute("DELETE FROM notas_documento WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     fn contar_carpetas(&self) -> Result<i64, ErrorBiblioteca> {
         self.conexion.query_row("SELECT COUNT(*) FROM carpetas", [], |fila| fila.get(0)).map_err(ErrorBiblioteca::from)
     }
 
-    pub fn guardar_progreso(&self, id_documento: &str, progreso: f64) -> Result<(), ErrorBiblioteca> {
+    pub fn guardar_progreso(&self, id_documento: &str, progreso: f64, estado_lectura: &EstadoLecturaDocumento) -> Result<(), ErrorBiblioteca> {
         let progreso_limitado = progreso.clamp(0.0, 100.0);
+        let estado_json = serde_json::to_string(estado_lectura)?;
         self.conexion.execute(
-            "UPDATE documentos SET progreso = ?1, ultima_lectura = datetime('now') WHERE id = ?2",
-            params![progreso_limitado, id_documento],
+            "UPDATE documentos SET progreso = ?1, ultima_lectura = datetime('now'), estado_lectura_json = ?2 WHERE id = ?3",
+            params![progreso_limitado, estado_json, id_documento],
         )?;
         Ok(())
     }
@@ -308,7 +368,7 @@ impl RepositorioBiblioteca {
 
     fn obtener_documento_por_ruta(&self, ruta: &str) -> Result<Documento, ErrorBiblioteca> {
         self.conexion.query_row(
-            "SELECT id, titulo, autor, formato, ruta, progreso, ultima_lectura, carpeta_id, orden FROM documentos WHERE ruta = ?1",
+            "SELECT id, titulo, autor, formato, ruta, progreso, ultima_lectura, carpeta_id, orden, estado_lectura_json FROM documentos WHERE ruta = ?1",
             [ruta], convertir_fila_documento,
         ).map_err(ErrorBiblioteca::from)
     }
@@ -318,6 +378,7 @@ fn convertir_fila_documento(fila: &rusqlite::Row<'_>) -> rusqlite::Result<Docume
     Ok(Documento {
         id: fila.get(0)?, titulo: fila.get(1)?, autor: fila.get(2)?, formato: fila.get(3)?,
         ruta: fila.get(4)?, progreso: fila.get(5)?, ultima_lectura: fila.get(6)?, carpeta_id: fila.get(7)?, orden: fila.get(8)?,
+        estado_lectura: fila.get::<_, Option<String>>(9)?.and_then(|valor| serde_json::from_str(&valor).ok()),
     })
 }
 
@@ -398,6 +459,48 @@ mod pruebas {
         assert!(ruta_pdf.exists());
         assert!(repositorio.listar_documentos().expect("listar vacío").is_empty());
         assert!(repositorio.listar_fragmentos(&documento.id).expect("sin fragmentos huérfanos").is_empty());
+        fs::remove_dir_all(directorio).expect("limpiar temporal");
+    }
+
+    #[test]
+    fn guarda_y_recupera_estado_lectura_exacto() {
+        let directorio = std::env::temp_dir().join(format!("carlector-progreso-{}", std::process::id()));
+        fs::create_dir_all(&directorio).expect("crear temporal");
+        let ruta_pdf = directorio.join("libro.pdf");
+        fs::write(&ruta_pdf, b"%PDF").expect("crear PDF");
+        let repositorio = abrir_base_datos(&directorio.join("prueba.db")).expect("abrir base");
+        let documento = repositorio.importar_documento(ruta_pdf.to_str().expect("ruta UTF-8")).expect("importar");
+        let estado = EstadoLecturaDocumento {
+            indice_fragmento: 17,
+            pagina: 4,
+            indice_unidad: 2,
+            desplazamiento: 815.5,
+            modo_visual_pdf: "original".to_string(),
+            componentes: EstadoPanelesLectura { biblioteca: false, inspector: true, controles: false },
+        };
+
+        repositorio.guardar_progreso(&documento.id, 42.0, &estado).expect("guardar progreso");
+        let recuperado = repositorio.listar_documentos().expect("listar").remove(0);
+
+        assert_eq!(recuperado.progreso, 42.0);
+        assert_eq!(recuperado.estado_lectura, Some(estado));
+        fs::remove_dir_all(directorio).expect("limpiar temporal");
+    }
+
+    #[test]
+    fn guarda_lista_y_elimina_notas_asociadas_al_documento() {
+        let directorio = std::env::temp_dir().join(format!("carlector-notas-{}", std::process::id()));
+        fs::create_dir_all(&directorio).expect("crear temporal");
+        let ruta_pdf = directorio.join("libro.pdf");
+        fs::write(&ruta_pdf, b"%PDF").expect("crear PDF");
+        let repositorio = abrir_base_datos(&directorio.join("prueba.db")).expect("abrir base");
+        let documento = repositorio.importar_documento(ruta_pdf.to_str().expect("ruta UTF-8")).expect("importar");
+        let nota = NotaDocumento { id: "nota-1".to_string(), documento_id: documento.id.clone(), texto: "Idea propia".to_string(), creado: "2026-08-28T10:00:00Z".to_string() };
+
+        repositorio.guardar_nota(&nota).expect("guardar nota");
+        assert_eq!(repositorio.listar_notas(&documento.id).expect("listar notas"), vec![nota]);
+        repositorio.eliminar_nota("nota-1").expect("eliminar nota");
+        assert!(repositorio.listar_notas(&documento.id).expect("sin notas").is_empty());
         fs::remove_dir_all(directorio).expect("limpiar temporal");
     }
 }

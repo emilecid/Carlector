@@ -4,7 +4,7 @@ mod kokoro;
 use std::fs;
 use std::sync::{Arc, Mutex};
 
-use biblioteca::{abrir_base_datos, descubrir_documentos_directorio, Carpeta, Documento, ErrorBiblioteca, FragmentoGuardado, RepositorioBiblioteca};
+use biblioteca::{abrir_base_datos, descubrir_documentos_directorio, Carpeta, Documento, ErrorBiblioteca, EstadoLecturaDocumento, FragmentoGuardado, NotaDocumento, RepositorioBiblioteca};
 use kokoro::{EstadoKokoro, MotorKokoro};
 use tauri::{Manager, State};
 
@@ -49,9 +49,9 @@ fn importar_documento(ruta: String, estado: State<'_, EstadoAplicacion>) -> Resu
 }
 
 #[tauri::command]
-fn guardar_progreso(id_documento: String, progreso: f64, estado: State<'_, EstadoAplicacion>) -> Result<(), String> {
+fn guardar_progreso(id_documento: String, progreso: f64, estado_lectura: EstadoLecturaDocumento, estado: State<'_, EstadoAplicacion>) -> Result<(), String> {
     let biblioteca = estado.biblioteca.lock().map_err(|_| "No fue posible bloquear la biblioteca".to_string())?;
-    biblioteca.guardar_progreso(&id_documento, progreso).map_err(|error| error.to_string())
+    biblioteca.guardar_progreso(&id_documento, progreso, &estado_lectura).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -126,6 +126,21 @@ fn cambiar_destacado_fragmento(id: String, destacado: bool, estado: State<'_, Es
 }
 
 #[tauri::command]
+fn guardar_nota(nota: NotaDocumento, estado: State<'_, EstadoAplicacion>) -> Result<(), String> {
+    estado.biblioteca.lock().map_err(|_| "No fue posible bloquear la biblioteca".to_string())?.guardar_nota(&nota).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn listar_notas(documento_id: String, estado: State<'_, EstadoAplicacion>) -> Result<Vec<NotaDocumento>, String> {
+    estado.biblioteca.lock().map_err(|_| "No fue posible bloquear la biblioteca".to_string())?.listar_notas(&documento_id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn eliminar_nota(id: String, estado: State<'_, EstadoAplicacion>) -> Result<(), String> {
+    estado.biblioteca.lock().map_err(|_| "No fue posible bloquear la biblioteca".to_string())?.eliminar_nota(&id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn guardar_cache_documento(documento_id: String, contenido: String, estado: State<'_, EstadoAplicacion>) -> Result<(), String> {
     estado.biblioteca.lock().map_err(|_| "No fue posible bloquear la biblioteca".to_string())?.guardar_cache_documento(&documento_id, &contenido).map_err(|error| error.to_string())
 }
@@ -153,7 +168,7 @@ pub fn ejecutar() {
             aplicacion.manage(EstadoAplicacion { biblioteca: Mutex::new(conexion), kokoro: Arc::new(Mutex::new(MotorKokoro::nuevo(&directorio_datos))) });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![estado_kokoro, instalar_kokoro, sintetizar_kokoro, listar_documentos, importar_documento, guardar_progreso, leer_documento, listar_documentos_directorio, listar_carpetas, crear_carpeta, renombrar_carpeta, eliminar_carpeta, mover_documento, editar_documento, reordenar_documentos, eliminar_documento, guardar_fragmento, listar_fragmentos, eliminar_fragmento, cambiar_destacado_fragmento, guardar_cache_documento, leer_cache_documento])
+        .invoke_handler(tauri::generate_handler![estado_kokoro, instalar_kokoro, sintetizar_kokoro, listar_documentos, importar_documento, guardar_progreso, leer_documento, listar_documentos_directorio, listar_carpetas, crear_carpeta, renombrar_carpeta, eliminar_carpeta, mover_documento, editar_documento, reordenar_documentos, eliminar_documento, guardar_fragmento, listar_fragmentos, eliminar_fragmento, cambiar_destacado_fragmento, guardar_nota, listar_notas, eliminar_nota, guardar_cache_documento, leer_cache_documento])
         .run(tauri::generate_context!())
         .expect("No fue posible ejecutar Carlector");
 }

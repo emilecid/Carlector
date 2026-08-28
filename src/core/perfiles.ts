@@ -1,4 +1,5 @@
 import type { ColoresInterfaz, PerfilLectura } from "./modelos";
+import { ATAJOS_PREDETERMINADOS, normalizar_atajos } from "./atajos.ts";
 
 export const TEMAS_PREDEFINIDOS: Record<string, { tema: PerfilLectura["tema"]; colores: ColoresInterfaz }> = {
   diurno: { tema: "claro", colores: { fondo: "#efeee9", superficie: "#f9f8f4", panel: "#e8e6df", borde: "#d3d0c6", texto: "#25241f", atenuado: "#716e65", acento: "#bc5c39", resaltado: "#f4c58e" } },
@@ -19,23 +20,27 @@ export const PERFIL_PREDETERMINADO: PerfilLectura = {
   auto_scroll: true,
   modo_enfoque: false,
   politica_matematica: "indicar",
+  saltar_citas: false,
   modo_lectura: "continua",
-  unidad_rsvp: "frase_corta",
-  palabras_rsvp: 3,
+  unidad_rsvp: "frase",
   palabras_por_minuto: 300,
-  estrategia_segmentacion: "puntuacion",
-  maximo_palabras_segmento: 12,
   voz_habilitada: true,
   motor_voz: "sistema",
   idioma_voz: "es",
   voz_base: "af_heart",
   componentes: { biblioteca: true, inspector: true, controles: true },
+  atajos: ATAJOS_PREDETERMINADOS,
   colores: TEMAS_PREDEFINIDOS.diurno!.colores,
 };
 
-export type PerfilLecturaParcial = Omit<Partial<PerfilLectura>, "componentes" | "colores"> & {
+export type PerfilLecturaParcial = Omit<Partial<PerfilLectura>, "componentes" | "colores" | "atajos" | "unidad_rsvp"> & {
   componentes?: Partial<PerfilLectura["componentes"]>;
   colores?: Partial<PerfilLectura["colores"]>;
+  atajos?: Partial<PerfilLectura["atajos"]>;
+  estrategia_segmentacion?: unknown;
+  maximo_palabras_segmento?: unknown;
+  palabras_rsvp?: unknown;
+  unidad_rsvp?: unknown;
 };
 
 function normalizar_color(valor: unknown, alternativa: string): string {
@@ -60,25 +65,28 @@ export function ajustar_palabras_por_minuto(palabras: number, cambio: number): n
 }
 
 export function normalizar_perfil(valor: PerfilLecturaParcial): PerfilLectura {
-  const colores_base = valor.tema === "oscuro" ? TEMAS_PREDEFINIDOS.nocturno!.colores : PERFIL_PREDETERMINADO.colores;
+  const { estrategia_segmentacion: estrategia_legacy, maximo_palabras_segmento: maximo_legacy, palabras_rsvp: palabras_rsvp_legacy, ...vigente } = valor;
+  void estrategia_legacy;
+  void maximo_legacy;
+  void palabras_rsvp_legacy;
+  const colores_base = vigente.tema === "oscuro" ? TEMAS_PREDEFINIDOS.nocturno!.colores : PERFIL_PREDETERMINADO.colores;
   return {
     ...PERFIL_PREDETERMINADO,
-    ...valor,
-    tamano_fuente: Math.min(40, Math.max(12, Number(valor.tamano_fuente ?? 20))),
-    interlineado: Math.min(2.5, Math.max(1.1, Number(valor.interlineado ?? 1.72))),
-    ancho_lectura: Math.min(1200, Math.max(420, Number(valor.ancho_lectura ?? 760))),
-    velocidad: Math.min(3, Math.max(0.5, Number(valor.velocidad ?? 1))),
-    modo_lectura: valor.modo_lectura === "rsvp" ? "rsvp" : "continua",
-    unidad_rsvp: valor.unidad_rsvp === "palabra" ? "palabra" : "frase_corta",
-    palabras_rsvp: Math.min(8, Math.max(1, Math.round(Number(valor.palabras_rsvp ?? 3)))),
-    palabras_por_minuto: Math.min(1200, Math.max(60, Math.round(Number(valor.palabras_por_minuto ?? 300)))),
-    estrategia_segmentacion: valor.estrategia_segmentacion === "cinco_palabras" ? "cinco_palabras" : "puntuacion",
-    maximo_palabras_segmento: Math.min(24, Math.max(2, Math.round(Number(valor.maximo_palabras_segmento ?? 12)))),
-    voz_habilitada: valor.voz_habilitada !== false,
-    motor_voz: valor.motor_voz === "kokoro_onnx" ? "kokoro_onnx" : "sistema",
-    idioma_voz: typeof valor.idioma_voz === "string" && valor.idioma_voz.trim() ? valor.idioma_voz.trim() : PERFIL_PREDETERMINADO.idioma_voz,
-    voz_base: typeof valor.voz_base === "string" && valor.voz_base.trim() ? valor.voz_base.trim() : PERFIL_PREDETERMINADO.voz_base,
-    componentes: { ...PERFIL_PREDETERMINADO.componentes, ...valor.componentes },
-    colores: Object.fromEntries(Object.entries(colores_base).map(([clave, alternativa]) => [clave, normalizar_color(valor.colores?.[clave as keyof ColoresInterfaz], alternativa)])) as unknown as ColoresInterfaz,
+    ...vigente,
+    tamano_fuente: Math.min(40, Math.max(12, Number(vigente.tamano_fuente ?? 20))),
+    interlineado: Math.min(2.5, Math.max(1.1, Number(vigente.interlineado ?? 1.72))),
+    ancho_lectura: Math.min(1200, Math.max(420, Number(vigente.ancho_lectura ?? 760))),
+    velocidad: Math.min(3, Math.max(0.5, Number(vigente.velocidad ?? 1))),
+    modo_lectura: vigente.modo_lectura === "rsvp" ? "rsvp" : "continua",
+    unidad_rsvp: vigente.unidad_rsvp === "palabra" ? "palabra" : "frase",
+    palabras_por_minuto: Math.min(1200, Math.max(60, Math.round(Number(vigente.palabras_por_minuto ?? 300)))),
+    saltar_citas: vigente.saltar_citas === true,
+    voz_habilitada: vigente.voz_habilitada !== false,
+    motor_voz: vigente.motor_voz === "kokoro_onnx" ? "kokoro_onnx" : "sistema",
+    idioma_voz: typeof vigente.idioma_voz === "string" && vigente.idioma_voz.trim() ? vigente.idioma_voz.trim() : PERFIL_PREDETERMINADO.idioma_voz,
+    voz_base: typeof vigente.voz_base === "string" && vigente.voz_base.trim() ? vigente.voz_base.trim() : PERFIL_PREDETERMINADO.voz_base,
+    componentes: { ...PERFIL_PREDETERMINADO.componentes, ...vigente.componentes },
+    atajos: normalizar_atajos(vigente.atajos),
+    colores: Object.fromEntries(Object.entries(colores_base).map(([clave, alternativa]) => [clave, normalizar_color(vigente.colores?.[clave as keyof ColoresInterfaz], alternativa)])) as unknown as ColoresInterfaz,
   };
 }
