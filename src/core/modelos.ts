@@ -69,6 +69,9 @@ export interface NotaDocumento {
   documento_id: string;
   texto: string;
   creado: string;
+  fragmento_id?: string | null;
+  pagina?: number | null;
+  ancla?: { bloque_id: string; inicio: number; fin: number } | null;
 }
 
 export interface ColoresInterfaz {

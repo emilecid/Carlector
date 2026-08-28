@@ -13,6 +13,7 @@ import { calcular_posicion_superpuesta, crear_ejecutor_diferido } from "./core/i
 import { abrir_pestana, ajustar_proporciones_paneles, cerrar_pestana, normalizar_documentos_divididos, normalizar_sesion_pestanas, proporciones_uniformes, type SesionDivision, type SesionPestanas } from "./core/pestanas.ts";
 import { resolver_control_paquete_voz } from "./core/interfaz_voz.ts";
 import { crear_informe_error } from "./core/informador_errores.ts";
+import { crear_exportacion_libreta, crear_html_exportacion_libreta } from "./core/libreta.ts";
 import { ajustar_palabras_por_minuto, ajustar_velocidad, clases_visibilidad_paneles, TEMAS_PREDEFINIDOS, normalizar_perfil } from "./core/perfiles.ts";
 import { segmentar_bloques, segmentar_texto } from "./core/segmentacion.ts";
 import { agrupar_locuciones, indice_locucion_en_posicion } from "./core/tts.ts";
@@ -67,6 +68,10 @@ const TAMANO_LOTE_RENDERIZADO = 320;
 const TAMANO_VENTANA_DOM = 600;
 const VERSION_CACHE_DOCUMENTO = 6;
 const CANTIDAD_ADELANTADA_KOKORO = 3;
+const CONFIGURACION_HTML_LIBRETA = {
+  ALLOWED_TAGS: ["article", "header", "section", "span", "h1", "h2", "h3", "p", "time", "blockquote", "br"],
+  ALLOWED_ATTR: ["class", "lang"],
+};
 let indice_resaltado_anterior = -1;
 let ultimo_guardado_progreso = 0;
 let generacion_voz = 0;
@@ -114,6 +119,8 @@ let cola_apertura_archivos: Promise<void> = Promise.resolve();
 const ultimos_guardados_paneles = new Map<string, number>();
 let foco_antes_modal: HTMLElement | null = null;
 let foco_antes_busqueda: HTMLElement | null = null;
+let foco_antes_libreta: HTMLElement | null = null;
+let libreta_flotante_abierta = false;
 const ETIQUETAS_ATAJOS: Record<AccionAtajo, string> = {
   buscar: "Buscar",
   reproducir: "Reproducir o pausar",
@@ -424,11 +431,17 @@ function renderizar_panel_fragmentos(): void {
   const guardados = document.querySelector<HTMLElement>("#contenido-fragmentos");
   if (perfil) perfil.hidden = pestana_derecha !== "perfil";
   if (!guardados) return;
-  guardados.hidden = pestana_derecha !== "fragmentos";
+  guardados.hidden = !libreta_flotante_abierta && pestana_derecha !== "fragmentos";
   const del_documento = documento_actual ? fragmentos_guardados.filter(({ documento_id }) => documento_id === documento_actual?.id) : [];
   const notas_del_documento = documento_actual ? notas_documento.filter(({ documento_id }) => documento_id === documento_actual?.id) : [];
   const controles_nota = documento_actual ? "" : "disabled";
-  guardados.innerHTML = `<div class="libreta-documento"><section id="libreta-fragmentos" class="seccion-libreta"><h2 class="panel-titulo">Fragmentos</h2><div class="lista-fragmentos">${del_documento.length ? del_documento.map((guardado) => `<article class="fragmento-guardado"><button data-ir-fragmento="${guardado.indice_fragmento}">${escapar_html(guardado.texto)}</button><button class="boton-destacado ${fragmento_esta_destacado(guardado) ? "activo" : ""}" data-destacar-fragmento="${escapar_html(guardado.id)}" aria-label="${fragmento_esta_destacado(guardado) ? "Quitar destacado" : "Destacar fragmento"}" title="${fragmento_esta_destacado(guardado) ? "Quitar destacado" : "Destacar fragmento"}">${fragmento_esta_destacado(guardado) ? "★" : "☆"}</button><button data-eliminar-fragmento="${escapar_html(guardado.id)}" aria-label="Eliminar fragmento">×</button></article>`).join("") : `<p class="carpetas-vacias">Selecciona texto y usa click derecho para guardarlo.</p>`}</div></section><section id="libreta-notas" class="seccion-libreta"><h2 class="panel-titulo">Notas</h2><form id="formulario-nota" class="formulario-nota"><label class="oculto" for="texto-nota">Nueva nota</label><textarea id="texto-nota" rows="3" maxlength="4000" placeholder="Escribe una nota sobre este documento" ${controles_nota}></textarea><button class="boton primario" type="submit" ${controles_nota}>Guardar nota</button></form><div id="lista-notas" class="lista-notas">${notas_del_documento.length ? notas_del_documento.map((nota) => `<article class="nota-documento"><p>${escapar_html(nota.texto).replace(/\n/g, "<br>")}</p><button data-eliminar-nota="${escapar_html(nota.id)}" aria-label="Eliminar nota">×</button></article>`).join("") : `<p class="carpetas-vacias">${documento_actual ? "Aún no hay notas." : "Abre un documento para escribir notas."}</p>`}</div></section></div>`;
+  const opciones_destino = del_documento.map((guardado, indice) => `<option value="${escapar_html(guardado.id)}">Fragmento ${indice + 1}: ${escapar_html(guardado.texto.slice(0, 54))}</option>`).join("");
+  guardados.innerHTML = `<div class="libreta-documento"><section id="libreta-fragmentos" class="seccion-libreta"><h2 class="panel-titulo">Fragmentos</h2><div class="lista-fragmentos">${del_documento.length ? del_documento.map((guardado) => `<article class="fragmento-guardado"><button data-ir-fragmento="${guardado.indice_fragmento}">${escapar_html(guardado.texto)}</button><button data-vincular-nota="${escapar_html(guardado.id)}" aria-label="Añadir nota a este fragmento" title="Añadir nota">✎</button><button class="boton-destacado ${fragmento_esta_destacado(guardado) ? "activo" : ""}" data-destacar-fragmento="${escapar_html(guardado.id)}" aria-label="${fragmento_esta_destacado(guardado) ? "Quitar destacado" : "Destacar fragmento"}" title="${fragmento_esta_destacado(guardado) ? "Quitar destacado" : "Destacar fragmento"}">${fragmento_esta_destacado(guardado) ? "★" : "☆"}</button><button data-eliminar-fragmento="${escapar_html(guardado.id)}" aria-label="Eliminar fragmento">×</button></article>`).join("") : `<p class="carpetas-vacias">Selecciona texto y usa click derecho para guardarlo.</p>`}</div></section><section id="libreta-notas" class="seccion-libreta"><h2 class="panel-titulo">Notas</h2><form id="formulario-nota" class="formulario-nota"><label for="destino-nota">Asociar con</label><select id="destino-nota" ${controles_nota}><option value="">Nota general</option>${opciones_destino}</select><label class="oculto" for="texto-nota">Nueva nota</label><textarea id="texto-nota" rows="3" maxlength="4000" placeholder="Escribe una nota sobre este documento" ${controles_nota}></textarea><button class="boton primario" type="submit" ${controles_nota}>Guardar nota</button></form><div id="lista-notas" class="lista-notas">${notas_del_documento.length ? notas_del_documento.map((nota) => {
+    const fragmento_vinculado = del_documento.find(({ id }) => id === nota.fragmento_id);
+    const destino = fragmento_vinculado ? `<button class="destino-nota-guardada" data-ir-nota="${escapar_html(fragmento_vinculado.id)}">Fragmento: ${escapar_html(fragmento_vinculado.texto.slice(0, 48))}</button>` : `<span class="destino-nota-general">Nota general${nota.pagina ? ` · página ${nota.pagina}` : ""}</span>`;
+    return `<article class="nota-documento"><div>${destino}<p>${escapar_html(nota.texto).replace(/\n/g, "<br>")}</p></div><button data-eliminar-nota="${escapar_html(nota.id)}" aria-label="Eliminar nota">×</button></article>`;
+  }).join("") : `<p class="carpetas-vacias">${documento_actual ? "Aún no hay notas." : "Abre un documento para escribir notas."}</p>`}</div></section></div>`;
+  guardados.querySelector("#libreta-fragmentos .panel-titulo")?.insertAdjacentHTML("afterend", `<button id="exportar-libreta-pdf" class="boton exportar-libreta-pdf" type="button" ${controles_nota}>Exportar PDF…</button>`);
   guardados.querySelectorAll<HTMLElement>("[data-ir-fragmento]").forEach((boton) => boton.addEventListener("click", () => {
     const guardado = del_documento.find(({ indice_fragmento }) => indice_fragmento === Number(boton.dataset.irFragmento));
     const ancla_guardada = guardado?.ancla;
@@ -437,12 +450,119 @@ function renderizar_panel_fragmentos(): void {
   }));
   guardados.querySelectorAll<HTMLElement>("[data-eliminar-fragmento]").forEach((boton) => boton.addEventListener("click", () => void eliminar_fragmento_guardado(boton.dataset.eliminarFragmento ?? "")));
   guardados.querySelectorAll<HTMLElement>("[data-destacar-fragmento]").forEach((boton) => boton.addEventListener("click", () => void alternar_destacado_fragmento(boton.dataset.destacarFragmento ?? "")));
+  guardados.querySelectorAll<HTMLElement>("[data-vincular-nota]").forEach((boton) => boton.addEventListener("click", () => {
+    const destino = guardados.querySelector<HTMLSelectElement>("#destino-nota");
+    if (destino) destino.value = boton.dataset.vincularNota ?? "";
+    guardados.querySelector<HTMLTextAreaElement>("#texto-nota")?.focus();
+  }));
+  guardados.querySelectorAll<HTMLElement>("[data-ir-nota]").forEach((boton) => boton.addEventListener("click", () => {
+    const fragmento_vinculado = del_documento.find(({ id }) => id === boton.dataset.irNota);
+    if (fragmento_vinculado) mover_lector_a_fragmento(fragmento_vinculado.indice_fragmento);
+  }));
   guardados.querySelector<HTMLFormElement>("#formulario-nota")?.addEventListener("submit", (evento) => { evento.preventDefault(); void guardar_nota_manual(); });
+  guardados.querySelector("#exportar-libreta-pdf")?.addEventListener("click", abrir_vista_previa_libreta);
   guardados.querySelectorAll<HTMLElement>("[data-eliminar-nota]").forEach((boton) => boton.addEventListener("click", () => void eliminar_nota_manual(boton.dataset.eliminarNota ?? "")));
 }
 
 function esperar_siguiente_cuadro(): Promise<void> {
   return new Promise((resolver) => requestAnimationFrame(() => resolver()));
+}
+
+function abrir_libreta_flotante(): void {
+  const ventana = document.querySelector<HTMLElement>("#libreta-flotante");
+  const destino = document.querySelector<HTMLElement>("#contenido-libreta-flotante");
+  const contenido = document.querySelector<HTMLElement>("#contenido-fragmentos");
+  if (!ventana || !destino || !contenido) return;
+  foco_antes_libreta = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  libreta_flotante_abierta = true;
+  destino.append(contenido);
+  ventana.hidden = false;
+  contenido.hidden = false;
+  document.querySelector("#abrir-libreta-flotante")?.setAttribute("aria-expanded", "true");
+  requestAnimationFrame(() => ventana.querySelector<HTMLElement>("#cerrar-libreta-flotante")?.focus());
+}
+
+function cerrar_libreta_flotante(): void {
+  const ventana = document.querySelector<HTMLElement>("#libreta-flotante");
+  const destino = document.querySelector<HTMLElement>("#ubicacion-libreta-panel");
+  const contenido = document.querySelector<HTMLElement>("#contenido-fragmentos");
+  if (!ventana || !destino || !contenido) return;
+  libreta_flotante_abierta = false;
+  destino.append(contenido);
+  contenido.hidden = pestana_derecha !== "fragmentos";
+  ventana.hidden = true;
+  document.querySelector("#abrir-libreta-flotante")?.setAttribute("aria-expanded", "false");
+  foco_antes_libreta?.focus();
+  foco_antes_libreta = null;
+}
+
+function enlazar_arrastre_libreta(): void {
+  const ventana = document.querySelector<HTMLElement>("#libreta-flotante");
+  const asa = document.querySelector<HTMLElement>("#asa-libreta-flotante");
+  if (!ventana || !asa) return;
+  asa.tabIndex = 0;
+  asa.setAttribute("aria-label", "Mover Libreta con flechas; Option y flechas cambia su tamaño");
+  asa.addEventListener("keydown", (evento) => {
+    if (evento.target !== asa || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(evento.key)) return;
+    evento.preventDefault();
+    const paso = evento.shiftKey ? 20 : 6;
+    const horizontal = evento.key === "ArrowLeft" ? -paso : evento.key === "ArrowRight" ? paso : 0;
+    const vertical = evento.key === "ArrowUp" ? -paso : evento.key === "ArrowDown" ? paso : 0;
+    const rectangulo = ventana.getBoundingClientRect();
+    if (evento.altKey) {
+      ventana.style.width = `${Math.max(280, Math.min(window.innerWidth - rectangulo.left - 8, rectangulo.width + horizontal))}px`;
+      ventana.style.height = `${Math.max(280, Math.min(window.innerHeight - rectangulo.top - 8, rectangulo.height + vertical))}px`;
+      return;
+    }
+    ventana.style.left = `${Math.max(8, Math.min(rectangulo.left + horizontal, window.innerWidth - rectangulo.width - 8))}px`;
+    ventana.style.top = `${Math.max(8, Math.min(rectangulo.top + vertical, window.innerHeight - rectangulo.height - 8))}px`;
+    ventana.style.right = "auto";
+    ventana.style.bottom = "auto";
+  });
+  asa.addEventListener("pointerdown", (evento) => {
+    if (evento.target instanceof Element && evento.target.closest("button")) return;
+    const rectangulo = ventana.getBoundingClientRect();
+    const desplazamiento_x = evento.clientX - rectangulo.left;
+    const desplazamiento_y = evento.clientY - rectangulo.top;
+    asa.setPointerCapture(evento.pointerId);
+    const mover = (movimiento: PointerEvent): void => {
+      const izquierda = Math.max(8, Math.min(movimiento.clientX - desplazamiento_x, window.innerWidth - ventana.offsetWidth - 8));
+      const superior = Math.max(8, Math.min(movimiento.clientY - desplazamiento_y, window.innerHeight - ventana.offsetHeight - 8));
+      ventana.style.left = `${izquierda}px`;
+      ventana.style.top = `${superior}px`;
+      ventana.style.right = "auto";
+      ventana.style.bottom = "auto";
+    };
+    const terminar = (): void => {
+      asa.removeEventListener("pointermove", mover);
+      asa.removeEventListener("pointerup", terminar);
+      asa.removeEventListener("pointercancel", terminar);
+    };
+    asa.addEventListener("pointermove", mover);
+    asa.addEventListener("pointerup", terminar);
+    asa.addEventListener("pointercancel", terminar);
+  });
+}
+
+function abrir_vista_previa_libreta(): void {
+  if (!documento_actual) return;
+  const contenido = document.querySelector<HTMLElement>("#contenido-exportacion-libreta");
+  if (!contenido) return;
+  const exportacion = crear_exportacion_libreta(documento_actual, fragmentos_guardados, notas_documento, new Date().toISOString());
+  contenido.innerHTML = DOMPurify.sanitize(crear_html_exportacion_libreta(exportacion), CONFIGURACION_HTML_LIBRETA);
+  abrir_modal("#vista-previa-libreta");
+}
+
+function imprimir_libreta_pdf(): void {
+  if (!documento_actual) return;
+  const titulo_anterior = document.title;
+  document.title = `${documento_actual.titulo} · Libreta`;
+  document.body.classList.add("imprimiendo-libreta");
+  window.addEventListener("afterprint", () => {
+    document.body.classList.remove("imprimiendo-libreta");
+    document.title = titulo_anterior;
+  }, { once: true });
+  window.print();
 }
 
 function crear_html_fragmento(fragmento: FragmentoLectura, indice: number, indices_guardados: Set<number>): string {
@@ -1651,7 +1771,15 @@ async function guardar_nota_manual(): Promise<void> {
   const control = document.querySelector<HTMLTextAreaElement>("#texto-nota");
   const texto = control?.value.trim() ?? "";
   if (!texto) { control?.focus(); return; }
-  const nota: NotaDocumento = { id: crypto.randomUUID(), documento_id: documento_actual.id, texto, creado: new Date().toISOString() };
+  const fragmento_id = document.querySelector<HTMLSelectElement>("#destino-nota")?.value || null;
+  const fragmento_guardado = fragmentos_guardados.find(({ id, documento_id }) => id === fragmento_id && documento_id === documento_actual?.id);
+  const fragmento_origen = fragmento_guardado ? fragmentos[fragmento_guardado.indice_fragmento] : undefined;
+  const nota: NotaDocumento = {
+    id: crypto.randomUUID(), documento_id: documento_actual.id, texto, creado: new Date().toISOString(),
+    fragmento_id: fragmento_guardado?.id ?? null,
+    pagina: fragmento_origen?.pagina ?? null,
+    ancla: fragmento_guardado?.ancla ?? fragmento_origen?.ancla ?? null,
+  };
   notas_documento = [...notas_documento, nota];
   persistencia.guardarNotas(notas_documento);
   if (isTauri() && documento_actual.id !== "demostracion") await invoke("guardar_nota", { nota });
@@ -1672,7 +1800,8 @@ async function eliminar_fragmento_guardado(id: string): Promise<void> {
   if (!guardado) return;
   if (isTauri() && guardado.documento_id !== "demostracion") await invoke("eliminar_fragmento", { id });
   fragmentos_guardados = fragmentos_guardados.filter((actual) => actual.id !== id);
-  persistencia.guardarFragmentos(fragmentos_guardados); renderizar_panel_fragmentos(); actualizar_destacados_visibles(); actualizar_resaltado();
+  notas_documento = notas_documento.map((nota) => nota.fragmento_id === id ? { ...nota, fragmento_id: null } : nota);
+  persistencia.guardarFragmentos(fragmentos_guardados); persistencia.guardarNotas(notas_documento); renderizar_panel_fragmentos(); actualizar_destacados_visibles(); actualizar_resaltado();
 }
 
 async function alternar_destacado_fragmento(id: string): Promise<void> {
@@ -2138,10 +2267,11 @@ function montar_aplicacion(): void {
     <div class="campo" data-solo-rsvp><label for="unidad-rsvp">Unidad RSVP</label><select id="unidad-rsvp"><option value="palabra">Una palabra</option><option value="frase">Frase</option></select></div>
     <details class="menu-omisiones-voz"><summary>Contenido en voz</summary><div class="contenido-menu-omisiones"><div class="campo"><label for="matematica">Matemática en voz</label><select id="matematica"><option value="leer">Leer</option><option value="omitir">Omitir</option><option value="indicar">Decir «ecuación»</option></select></div><fieldset class="lista-omisiones-voz"><legend>Omitir al leer</legend><label><input id="saltar-citas" type="checkbox"> Citas bibliográficas</label><label><input type="checkbox" checked disabled> Símbolos ilegibles</label></fieldset></div></details>
     <div class="campo campo-linea"><label for="auto-scroll">Auto-scroll</label><input id="auto-scroll" class="interruptor" type="checkbox"></div></div></details>
-    <details class="panel-seccion grupo-configuracion" open><summary><span>Voz</span><button id="abrir-repositorios-voz" class="boton-biblioteca-temas" aria-label="Administrar repositorios de voz" title="Repositorios de voz">⬡</button></summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea campo-voz-habilitada"><label for="voz-habilitada">Voz habilitada</label><input id="voz-habilitada" class="interruptor" type="checkbox"></div><div class="campo"><label for="motor-voz">Motor</label><select id="motor-voz"><option value="sistema">TTS del sistema · experimental</option><option value="kokoro_onnx" ${kokoro_instalado ? "" : "disabled"}>Kokoro ONNX${kokoro_instalado ? " · verificado" : " · no instalado"}</option></select></div><div class="campo" data-solo-kokoro><label for="idioma-voz">Paquete de idioma</label><select id="idioma-voz"><option value="es">Español genérico</option><option value="en-us">Inglés · Estados Unidos</option><option value="en-gb">Inglés · Reino Unido</option></select></div><div class="campo" data-solo-kokoro><label for="voz-base">Voz compatible</label><select id="voz-base"></select></div><div class="control-velocidad-voz" data-solo-con-voz><label>Velocidad de reproducción</label><div class="velocidad-linea"><button id="velocidad-menos" class="velocidad-ajuste" aria-label="Reducir velocidad en 0.1">−</button><input id="velocidad" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.velocidad}"><button id="velocidad-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad en 0.1">+</button><span id="valor-velocidad"></span></div><div class="velocidades-rapidas"><button data-velocidad="1">1×</button><button data-velocidad="1.5">1.5×</button><button data-velocidad="2">2×</button></div></div><p class="ayuda-campo" data-solo-kokoro>Idioma y voz se sincronizan automáticamente para evitar combinaciones incompatibles.</p></div></details><details class="panel-seccion grupo-configuracion"><summary>Sistema</summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea"><label for="mostrar-informes-error">Mostrar informes de error</label><input id="mostrar-informes-error" class="interruptor" type="checkbox" ${informes_error_habilitados ? "checked" : ""}></div><fieldset class="atajos-configurables"><legend>Atajos de teclado</legend>${Object.entries(ETIQUETAS_ATAJOS).map(([accion, etiqueta]) => `<label for="atajo-${accion}">${etiqueta}</label><input id="atajo-${accion}" data-atajo="${accion}" value="${describir_atajo(perfil_actual.atajos[accion as AccionAtajo])}" readonly aria-describedby="ayuda-atajos estado-atajos">`).join("")}<p id="ayuda-atajos">Selecciona un campo y pulsa la combinación nueva. Escape cancela.</p><p id="estado-atajos" role="status"></p><button id="restaurar-atajos" class="boton" type="button">Restaurar atajos</button></fieldset></div></details></div><section id="contenido-fragmentos" class="panel-seccion"></section></div></aside></div>
+    <details class="panel-seccion grupo-configuracion" open><summary><span>Voz</span><button id="abrir-repositorios-voz" class="boton-biblioteca-temas" aria-label="Administrar repositorios de voz" title="Repositorios de voz">⬡</button></summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea campo-voz-habilitada"><label for="voz-habilitada">Voz habilitada</label><input id="voz-habilitada" class="interruptor" type="checkbox"></div><div class="campo"><label for="motor-voz">Motor</label><select id="motor-voz"><option value="sistema">TTS del sistema · experimental</option><option value="kokoro_onnx" ${kokoro_instalado ? "" : "disabled"}>Kokoro ONNX${kokoro_instalado ? " · verificado" : " · no instalado"}</option></select></div><div class="campo" data-solo-kokoro><label for="idioma-voz">Paquete de idioma</label><select id="idioma-voz"><option value="es">Español genérico</option><option value="en-us">Inglés · Estados Unidos</option><option value="en-gb">Inglés · Reino Unido</option></select></div><div class="campo" data-solo-kokoro><label for="voz-base">Voz compatible</label><select id="voz-base"></select></div><div class="control-velocidad-voz" data-solo-con-voz><label>Velocidad de reproducción</label><div class="velocidad-linea"><button id="velocidad-menos" class="velocidad-ajuste" aria-label="Reducir velocidad en 0.1">−</button><input id="velocidad" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.velocidad}"><button id="velocidad-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad en 0.1">+</button><span id="valor-velocidad"></span></div><div class="velocidades-rapidas"><button data-velocidad="1">1×</button><button data-velocidad="1.5">1.5×</button><button data-velocidad="2">2×</button></div></div><p class="ayuda-campo" data-solo-kokoro>Idioma y voz se sincronizan automáticamente para evitar combinaciones incompatibles.</p></div></details><details class="panel-seccion grupo-configuracion"><summary>Sistema</summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea"><label for="mostrar-informes-error">Mostrar informes de error</label><input id="mostrar-informes-error" class="interruptor" type="checkbox" ${informes_error_habilitados ? "checked" : ""}></div><fieldset class="atajos-configurables"><legend>Atajos de teclado</legend>${Object.entries(ETIQUETAS_ATAJOS).map(([accion, etiqueta]) => `<label for="atajo-${accion}">${etiqueta}</label><input id="atajo-${accion}" data-atajo="${accion}" value="${describir_atajo(perfil_actual.atajos[accion as AccionAtajo])}" readonly aria-describedby="ayuda-atajos estado-atajos">`).join("")}<p id="ayuda-atajos">Selecciona un campo y pulsa la combinación nueva. Escape cancela.</p><p id="estado-atajos" role="status"></p><button id="restaurar-atajos" class="boton" type="button">Restaurar atajos</button></fieldset></div></details></div><div id="ubicacion-libreta-panel"><section id="contenido-fragmentos" class="panel-seccion"></section></div></div></aside></div>
     <div id="menu-agregar" class="menu-agregar" hidden><button id="anadir-archivo">Añadir archivo</button><button id="anadir-carpeta">Añadir carpeta del sistema</button><button id="crear-carpeta">Crear carpeta virtual</button></div><div id="menu-contextual" class="menu-agregar menu-contextual" hidden></div><section id="biblioteca-temas" class="modal-temas" hidden><div class="dialogo-temas"><header><div><h2>Biblioteca de temas</h2><p>Paletas locales para lectura e interfaz</p></div><button id="cerrar-biblioteca-temas" aria-label="Cerrar">×</button></header><div id="lista-biblioteca-temas" class="lista-biblioteca-temas"></div><footer><button id="guardar-tema-actual" class="boton primario">Guardar tema actual</button></footer></div></section><section id="repositorios-voz" class="modal-temas" hidden><div class="dialogo-temas dialogo-repositorios"><header><h2>Repositorios de voz</h2><button id="cerrar-repositorios-voz" aria-label="Cerrar">×</button></header><div id="lista-repositorios-voz" class="lista-repositorios-voz"></div><footer><button id="actualizar-estado-voz" class="boton">Comprobar estado</button></footer></div></section>
-    <section id="informador-error" class="informador-error" role="alertdialog" aria-labelledby="error-contexto" aria-describedby="error-detalle" hidden><div><header><strong id="error-contexto">Error de Carlector</strong><button id="cerrar-informador-error" aria-label="Cerrar">×</button></header><p id="error-detalle"></p><small id="error-fecha"></small><footer><label><input id="no-mostrar-errores" type="checkbox"> No volver a mostrar</label><button id="aceptar-informador-error" class="boton primario">Cerrar</button></footer></div></section><section id="carga-importacion" class="carga-importacion" role="status" aria-live="polite" hidden><strong>Cargando biblioteca</strong><span id="carga-nombre"></span><progress id="carga-progreso" max="100"></progress><small id="carga-estado"></small></section><button id="salir-modo-enfoque" type="button" aria-label="Salir del modo lectura">×</button>
+    <section id="libreta-flotante" class="libreta-flotante" aria-labelledby="titulo-libreta-flotante" hidden><header id="asa-libreta-flotante"><strong id="titulo-libreta-flotante">Libreta</strong><button id="cerrar-libreta-flotante" aria-label="Cerrar Libreta flotante">×</button></header><div id="contenido-libreta-flotante" class="contenido-libreta-flotante"></div></section><section id="informador-error" class="informador-error" role="alertdialog" aria-labelledby="error-contexto" aria-describedby="error-detalle" hidden><div><header><strong id="error-contexto">Error de Carlector</strong><button id="cerrar-informador-error" aria-label="Cerrar">×</button></header><p id="error-detalle"></p><small id="error-fecha"></small><footer><label><input id="no-mostrar-errores" type="checkbox"> No volver a mostrar</label><button id="aceptar-informador-error" class="boton primario">Cerrar</button></footer></div></section><section id="carga-importacion" class="carga-importacion" role="status" aria-live="polite" hidden><strong>Cargando biblioteca</strong><span id="carga-nombre"></span><progress id="carga-progreso" max="100"></progress><small id="carga-estado"></small></section><button id="abrir-libreta-flotante" type="button" aria-label="Abrir Libreta flotante" aria-expanded="false" title="Abrir Libreta flotante">↗</button><button id="salir-modo-enfoque" type="button" aria-label="Salir del modo lectura">×</button>
     <footer class="control-inferior"><div class="control-documento"><strong id="documento-actual"></strong></div><div class="reproductor"><button id="anterior" class="boton-icono" aria-label="Fragmento anterior">←</button><button id="reproducir" class="reproducir" aria-label="Reproducir" title="Reproducir o pausar · Space">▶</button><button id="siguiente" class="boton-icono" aria-label="Fragmento siguiente">→</button></div><div class="control-velocidad" data-solo-sin-voz><div class="velocidad-linea"><button id="palabras-menos" class="velocidad-ajuste" aria-label="Reducir palabras por minuto">−</button><input id="palabras-minuto" type="range" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto}"><button id="palabras-mas" class="velocidad-ajuste" aria-label="Aumentar palabras por minuto">+</button><span id="valor-palabras-minuto"></span></div><div class="velocidades-rapidas"><button data-palabras-minuto="200">200</button><button data-palabras-minuto="300">300</button><button data-palabras-minuto="450">450</button></div></div></footer></div>`;
+  aplicacion.insertAdjacentHTML("beforeend", `<section id="vista-previa-libreta" class="modal-temas vista-previa-libreta" role="dialog" aria-modal="true" aria-labelledby="titulo-vista-previa-libreta" hidden><div class="dialogo-exportacion-libreta"><header class="acciones-vista-previa-libreta"><div><h2 id="titulo-vista-previa-libreta">Vista previa de Libreta</h2><p>En macOS, usa PDF → Guardar como PDF en el diálogo siguiente.</p></div><button id="cerrar-vista-previa-libreta" aria-label="Cerrar vista previa">×</button></header><div id="contenido-exportacion-libreta" class="contenido-exportacion-libreta"></div><footer class="acciones-vista-previa-libreta"><button id="imprimir-libreta-pdf" class="boton primario" type="button">Guardar PDF…</button></footer></div></section>`);
 
   ([["#biblioteca-temas", "Biblioteca de temas"], ["#repositorios-voz", "Repositorios de voz"]] as Array<[string, string]>).forEach(([selector, etiqueta]) => {
     const modal = document.querySelector<HTMLElement>(selector);
@@ -2222,6 +2352,12 @@ function montar_aplicacion(): void {
   document.querySelector("#alternar-panel-biblioteca")?.addEventListener("click", () => actualizar_perfil({ componentes: { biblioteca: !perfil_actual.componentes.biblioteca, ...(es_interfaz_movil() ? { inspector: false } : {}) } }));
   document.querySelector("#alternar-panel-inspector")?.addEventListener("click", () => actualizar_perfil({ componentes: { inspector: !perfil_actual.componentes.inspector, ...(es_interfaz_movil() ? { biblioteca: false } : {}) } }));
   document.querySelector("#salir-modo-enfoque")?.addEventListener("click", () => actualizar_perfil({ modo_enfoque: false }));
+  document.querySelector("#abrir-libreta-flotante")?.addEventListener("click", abrir_libreta_flotante);
+  document.querySelector("#cerrar-libreta-flotante")?.addEventListener("click", cerrar_libreta_flotante);
+  document.querySelector("#cerrar-vista-previa-libreta")?.addEventListener("click", () => cerrar_modal("#vista-previa-libreta"));
+  document.querySelector("#imprimir-libreta-pdf")?.addEventListener("click", imprimir_libreta_pdf);
+  document.querySelector("#vista-previa-libreta")?.addEventListener("click", (evento) => { if (evento.target === evento.currentTarget) cerrar_modal("#vista-previa-libreta"); });
+  enlazar_arrastre_libreta();
   document.querySelector<HTMLInputElement>("#archivo")?.addEventListener("change", async (evento) => {
     const entrada = evento.currentTarget as HTMLInputElement;
     try { await importar_documentos(entrada.files); }
@@ -2315,6 +2451,8 @@ function montar_aplicacion(): void {
   document.addEventListener("scroll", () => { cerrar_menus_contextuales(); document.querySelector<HTMLElement>("#menu-agregar")?.setAttribute("hidden", ""); }, true);
   document.addEventListener("keydown", (evento) => {
     if (evento.key === "Escape") {
+      if (!document.querySelector<HTMLElement>("#vista-previa-libreta")?.hidden) { cerrar_modal("#vista-previa-libreta"); return; }
+      if (libreta_flotante_abierta) { cerrar_libreta_flotante(); return; }
       if (!document.querySelector<HTMLElement>(".busqueda-global")?.hidden) { cerrar_busqueda_global(); return; }
       if (!document.querySelector<HTMLElement>("#informador-error")?.hidden) { cerrar_informador_error(); return; }
       if (!document.querySelector<HTMLElement>("#biblioteca-temas")?.hidden) { cerrar_modal("#biblioteca-temas"); return; }

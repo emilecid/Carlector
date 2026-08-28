@@ -75,6 +75,12 @@ pub struct NotaDocumento {
     pub documento_id: String,
     pub texto: String,
     pub creado: String,
+    #[serde(default)]
+    pub fragmento_id: Option<String>,
+    #[serde(default)]
+    pub pagina: Option<i64>,
+    #[serde(default)]
+    pub ancla: Option<AnclaFragmento>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -123,7 +129,10 @@ pub fn abrir_base_datos(ruta: &Path) -> Result<RepositorioBiblioteca, ErrorBibli
            id TEXT PRIMARY KEY,
            documento_id TEXT NOT NULL,
            texto TEXT NOT NULL CHECK(length(trim(texto)) > 0),
-           creado TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+           creado TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+           fragmento_id TEXT,
+           pagina INTEGER CHECK(pagina IS NULL OR pagina >= 1),
+           ancla_json TEXT
          );
          CREATE INDEX IF NOT EXISTS notas_por_documento ON notas_documento(documento_id, creado);
          CREATE TABLE IF NOT EXISTS cache_documentos (
@@ -138,6 +147,9 @@ pub fn abrir_base_datos(ruta: &Path) -> Result<RepositorioBiblioteca, ErrorBibli
     migrar_columna(&conexion, "estado_lectura_json", "TEXT")?;
     migrar_columna_tabla(&conexion, "fragmentos_guardados", "destacado", "INTEGER NOT NULL DEFAULT 1")?;
     migrar_columna_tabla(&conexion, "fragmentos_guardados", "ancla_json", "TEXT")?;
+    migrar_columna_tabla(&conexion, "notas_documento", "fragmento_id", "TEXT")?;
+    migrar_columna_tabla(&conexion, "notas_documento", "pagina", "INTEGER")?;
+    migrar_columna_tabla(&conexion, "notas_documento", "ancla_json", "TEXT")?;
     migrar_formato_markdown(&conexion)?;
     Ok(RepositorioBiblioteca { conexion })
 }
@@ -343,6 +355,7 @@ impl RepositorioBiblioteca {
     }
 
     pub fn eliminar_fragmento(&self, id: &str) -> Result<(), ErrorBiblioteca> {
+        self.conexion.execute("UPDATE notas_documento SET fragmento_id = NULL WHERE fragmento_id = ?1", [id])?;
         self.conexion.execute("DELETE FROM fragmentos_guardados WHERE id = ?1", [id])?;
         Ok(())
     }
@@ -353,19 +366,21 @@ impl RepositorioBiblioteca {
     }
 
     pub fn guardar_nota(&self, nota: &NotaDocumento) -> Result<(), ErrorBiblioteca> {
+        let ancla_json = nota.ancla.as_ref().map(serde_json::to_string).transpose()?;
         self.conexion.execute(
-            "INSERT OR REPLACE INTO notas_documento (id, documento_id, texto, creado) VALUES (?1, ?2, ?3, ?4)",
-            params![nota.id, nota.documento_id, nota.texto, nota.creado],
+            "INSERT OR REPLACE INTO notas_documento (id, documento_id, texto, creado, fragmento_id, pagina, ancla_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![nota.id, nota.documento_id, nota.texto, nota.creado, nota.fragmento_id, nota.pagina, ancla_json],
         )?;
         Ok(())
     }
 
     pub fn listar_notas(&self, documento_id: &str) -> Result<Vec<NotaDocumento>, ErrorBiblioteca> {
         let mut consulta = self.conexion.prepare(
-            "SELECT id, documento_id, texto, creado FROM notas_documento WHERE documento_id = ?1 ORDER BY creado, id",
+            "SELECT id, documento_id, texto, creado, fragmento_id, pagina, ancla_json FROM notas_documento WHERE documento_id = ?1 ORDER BY creado, id",
         )?;
         let filas = consulta.query_map([documento_id], |fila| Ok(NotaDocumento {
-            id: fila.get(0)?, documento_id: fila.get(1)?, texto: fila.get(2)?, creado: fila.get(3)?,
+            id: fila.get(0)?, documento_id: fila.get(1)?, texto: fila.get(2)?, creado: fila.get(3)?, fragmento_id: fila.get(4)?, pagina: fila.get(5)?,
+            ancla: fila.get::<_, Option<String>>(6)?.and_then(|valor| serde_json::from_str(&valor).ok()),
         }))?;
         filas.collect::<Result<Vec<_>, _>>().map_err(ErrorBiblioteca::from)
     }
@@ -579,12 +594,35 @@ mod pruebas {
         fs::write(&ruta_pdf, b"%PDF").expect("crear PDF");
         let repositorio = abrir_base_datos(&directorio.join("prueba.db")).expect("abrir base");
         let documento = repositorio.importar_documento(ruta_pdf.to_str().expect("ruta UTF-8")).expect("importar");
-        let nota = NotaDocumento { id: "nota-1".to_string(), documento_id: documento.id.clone(), texto: "Idea propia".to_string(), creado: "2026-08-28T10:00:00Z".to_string() };
+        let nota = NotaDocumento { id: "nota-1".to_string(), documento_id: documento.id.clone(), texto: "Idea propia".to_string(), creado: "2026-08-28T10:00:00Z".to_string(), fragmento_id: None, pagina: None, ancla: None };
 
         repositorio.guardar_nota(&nota).expect("guardar nota");
         assert_eq!(repositorio.listar_notas(&documento.id).expect("listar notas"), vec![nota]);
         repositorio.eliminar_nota("nota-1").expect("eliminar nota");
         assert!(repositorio.listar_notas(&documento.id).expect("sin notas").is_empty());
+        fs::remove_dir_all(directorio).expect("limpiar temporal");
+    }
+
+    #[test]
+    fn prepara_notas_para_vincular_fragmento_pagina_y_ancla() {
+        let directorio = std::env::temp_dir().join(format!("carlector-notas-vinculadas-{}", std::process::id()));
+        fs::create_dir_all(&directorio).expect("crear temporal");
+        let repositorio = abrir_base_datos(&directorio.join("prueba.db")).expect("abrir base");
+        let ruta_pdf = directorio.join("cientifico.pdf");
+        fs::write(&ruta_pdf, b"%PDF").expect("crear PDF");
+        let documento = repositorio.importar_documento(ruta_pdf.to_str().expect("ruta UTF-8")).expect("importar");
+        let ancla = AnclaFragmento { bloque_id: "bloque-7".to_string(), inicio: 12, fin: 48 };
+        let fragmento = FragmentoGuardado { id: "fragmento-7".to_string(), documento_id: documento.id.clone(), texto: "Texto científico".to_string(), indice_fragmento: 7, creado: "2026-08-28T10:00:00Z".to_string(), destacado: true, ancla: Some(ancla.clone()) };
+        repositorio.guardar_fragmento(&fragmento).expect("guardar fragmento");
+        let nota = NotaDocumento { id: "nota-7".to_string(), documento_id: documento.id.clone(), texto: "Relacionar con α".to_string(), creado: "2026-08-28T11:00:00Z".to_string(), fragmento_id: Some(fragmento.id.clone()), pagina: Some(7), ancla: Some(ancla.clone()) };
+
+        repositorio.guardar_nota(&nota).expect("guardar nota vinculada");
+        assert_eq!(repositorio.listar_notas(&documento.id).expect("listar notas"), vec![nota]);
+        repositorio.eliminar_fragmento(&fragmento.id).expect("eliminar fragmento");
+        let nota_sin_fragmento = repositorio.listar_notas(&documento.id).expect("listar nota conservada").remove(0);
+        assert_eq!(nota_sin_fragmento.fragmento_id, None);
+        assert_eq!(nota_sin_fragmento.pagina, Some(7));
+        assert_eq!(nota_sin_fragmento.ancla, Some(ancla));
         fs::remove_dir_all(directorio).expect("limpiar temporal");
     }
 }
