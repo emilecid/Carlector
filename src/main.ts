@@ -14,7 +14,7 @@ import { abrir_pestana, ajustar_proporciones_paneles, cerrar_pestana, normalizar
 import { resolver_control_paquete_voz } from "./core/interfaz_voz.ts";
 import { crear_informe_error } from "./core/informador_errores.ts";
 import { crear_exportacion_libreta, crear_html_exportacion_libreta } from "./core/libreta.ts";
-import { ajustar_palabras_por_minuto, ajustar_velocidad, clases_visibilidad_paneles, combinar_componentes_documento, PERFIL_PREDETERMINADO, TEMAS_PREDEFINIDOS, normalizar_perfil } from "./core/perfiles.ts";
+import { ajustar_palabras_por_minuto, ajustar_velocidad, clases_visibilidad_paneles, combinar_componentes_documento, PERFIL_PREDETERMINADO, TEMAS_PREDEFINIDOS, normalizar_perfil, type PerfilLecturaParcial } from "./core/perfiles.ts";
 import { segmentar_bloques, segmentar_texto } from "./core/segmentacion.ts";
 import { agrupar_locuciones, indice_locucion_en_posicion } from "./core/tts.ts";
 import { ajustar_zoom_pdf, cambio_zoom_gesto_pdf, indice_de_punto_pdf, indice_de_seleccion_pdf, indice_inicial_pagina, mapear_fragmentos_pdf, pagina_de_fragmento, rango_relativo_fragmento_pdf, rango_relativo_unidad_pdf, rango_textual_unidad_pdf, resolver_pagina_pdf, type RangoTextoPdf } from "./core/visor_pdf.ts";
@@ -24,7 +24,7 @@ import { ReproductorWebAudio } from "./infra/reproductor_web_audio.ts";
 import { persistencia } from "./infra/persistencia.ts";
 import DOMPurify from "dompurify";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -130,6 +130,7 @@ const ETIQUETAS_ATAJOS: Record<AccionAtajo, string> = {
   alternar_pdf: "Cambiar vista PDF",
 };
 const CONSULTA_INTERFAZ_MOVIL = "(max-width:700px), (max-width:900px) and (pointer:coarse)";
+const ES_VENTANA_PREFERENCIAS = new URLSearchParams(window.location.search).get("preferencias") === "1";
 
 function es_interfaz_movil(): boolean {
   return window.matchMedia(CONSULTA_INTERFAZ_MOVIL).matches;
@@ -166,15 +167,20 @@ function informar_error(contexto: string, error: unknown): void {
 function cerrar_informador_error(): void {
   const no_mostrar = document.querySelector<HTMLInputElement>("#no-mostrar-errores");
   if (no_mostrar?.checked) {
-    informes_error_habilitados = false;
-    persistencia.guardarInformesError(false);
-    const control = document.querySelector<HTMLInputElement>("#mostrar-informes-error");
-    if (control) control.checked = false;
+    actualizar_informes_error(false);
   }
   if (no_mostrar) no_mostrar.checked = false;
   document.querySelector<HTMLElement>("#informador-error")?.setAttribute("hidden", "");
   foco_antes_modal?.focus();
   foco_antes_modal = null;
+}
+
+function actualizar_informes_error(habilitados: boolean, notificar = true): void {
+  informes_error_habilitados = habilitados;
+  persistencia.guardarInformesError(habilitados);
+  const control = document.querySelector<HTMLInputElement>("#mostrar-informes-error");
+  if (control) control.checked = habilitados;
+  if (notificar && isTauri()) void emit("informes-error-actualizados", habilitados).catch((error) => console.error("No fue posible sincronizar los informes de error", error));
 }
 
 function abrir_modal(selector: string): void {
@@ -2069,7 +2075,7 @@ async function ejecutar_importacion(tarea: () => Promise<void>, mensaje_error: s
   }
 }
 
-function actualizar_perfil(cambios: Parameters<typeof normalizar_perfil>[0]): void {
+function actualizar_perfil(cambios: PerfilLecturaParcial, notificar = true): void {
   perfil_actual = normalizar_perfil({
     ...perfil_actual,
     ...cambios,
@@ -2079,13 +2085,22 @@ function actualizar_perfil(cambios: Parameters<typeof normalizar_perfil>[0]): vo
     colores: cambios.colores ? { ...perfil_actual.colores, ...cambios.colores } : perfil_actual.colores,
   });
   persistencia.guardarPerfil(perfil_actual);
+  if (notificar && isTauri()) void emit("perfil-actualizado", cambios).catch((error) => console.error("No fue posible sincronizar el perfil", error));
   aplicar_perfil();
   if (cambios.componentes && documento_actual) guardar_posicion_actual(true);
   if (vista_actual === "lector" && (cambios.politica_matematica !== undefined || cambios.saltar_citas !== undefined || cambios.modo_lectura !== undefined || cambios.unidad_rsvp !== undefined)) {
     detener_voz();
     void renderizar_lector();
   }
-  actualizar_panel_perfil();
+  sincronizar_campos_perfil();
+}
+
+async function inicializar_sincronizacion_perfil(): Promise<void> {
+  if (!isTauri()) return;
+  await Promise.all([
+    listen<PerfilLecturaParcial>("perfil-actualizado", ({ payload }) => actualizar_perfil(payload, false)),
+    listen<boolean>("informes-error-actualizados", ({ payload }) => actualizar_informes_error(payload, false)),
+  ]);
 }
 
 function actualizar_panel_perfil(): void {
@@ -2139,6 +2154,28 @@ function actualizar_panel_perfil(): void {
     }
     voz.value = configuracion.voz;
   }
+}
+
+function sincronizar_campos_perfil(): void {
+  actualizar_panel_perfil();
+  sincronizar_controles_colores();
+  const valores: Array<[string, string | number | boolean]> = [
+    ["tamano", perfil_actual.tamano_fuente],
+    ["velocidad", perfil_actual.velocidad],
+    ["palabras-minuto", perfil_actual.palabras_por_minuto],
+    ["matematica", perfil_actual.politica_matematica],
+    ["saltar-citas", perfil_actual.saltar_citas],
+    ["auto-scroll", perfil_actual.auto_scroll],
+    ["voz-habilitada", perfil_actual.voz_habilitada],
+    ["modo-lectura-selector", perfil_actual.modo_lectura],
+    ["unidad-rsvp", perfil_actual.unidad_rsvp],
+  ];
+  valores.forEach(([id, valor]) => {
+    const control = document.querySelector<HTMLInputElement | HTMLSelectElement>(`#${id}`);
+    if (!control) return;
+    if (control instanceof HTMLInputElement && control.type === "checkbox") control.checked = Boolean(valor);
+    else control.value = String(valor);
+  });
 }
 
 function crear_controles_interfaz(): string {
@@ -2310,12 +2347,14 @@ function ejecutar_atajo(accion: AccionAtajo): void {
 function montar_aplicacion(): void {
   const aplicacion = document.querySelector<HTMLElement>("#app");
   if (!aplicacion) return;
+  document.body.classList.toggle("ventana-preferencias", ES_VENTANA_PREFERENCIAS);
+  if (ES_VENTANA_PREFERENCIAS) pestana_derecha = "perfil";
   aplicacion.innerHTML = `<div class="aplicacion"><header class="barra-superior">
     <nav class="pestanas" aria-label="Documentos abiertos"><button class="pestana activa" data-vista="biblioteca">Biblioteca</button><span id="pestanas-documentos" class="pestanas-documentos" role="tablist"></span></nav>
     <div class="acciones-superiores"><button id="modo-enfoque" class="boton">Modo lectura</button><input id="archivo" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" multiple><input id="carpeta" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" webkitdirectory multiple></div><div class="busqueda-global" role="search" aria-label="Buscar en la vista actual" hidden><input id="busqueda-global" type="search" placeholder="Buscar" aria-label="Texto que buscar"><span id="estado-busqueda-global" aria-live="polite"></span><button id="busqueda-anterior" aria-label="Resultado anterior">↑</button><button id="busqueda-siguiente" aria-label="Resultado siguiente">↓</button><button id="cerrar-busqueda-global" aria-label="Cerrar búsqueda">×</button></div></header>
     <div class="contenido"><aside id="panel-biblioteca" class="panel"><button id="alternar-panel-biblioteca" class="flecha-panel flecha-panel-izquierda" aria-label="Ocultar biblioteca">‹</button><div class="panel-contenido"><div class="pestanas-panel"><button class="activo" data-pestana-izquierda="biblioteca">Biblioteca</button><button data-pestana-izquierda="indice">Índice</button></div><div id="contenido-biblioteca"><section class="panel-seccion"><div class="encabezado-panel"><h2 class="panel-titulo">Organización</h2><button id="abrir-menu-agregar" class="agregar-biblioteca" aria-label="Añadir a biblioteca" title="Añadir a biblioteca">+</button></div><nav id="navegacion-biblioteca" class="navegacion"></nav></section>
     <section class="panel-seccion"><h2 class="panel-titulo">Carpetas</h2><nav id="carpetas-biblioteca" class="navegacion"></nav></section></div><section id="contenido-indice" class="panel-seccion" hidden></section>
-    </div></aside><section id="vista-principal" class="vista-principal"></section><aside id="panel-inspector" class="panel panel-derecho"><button id="alternar-panel-inspector" class="flecha-panel flecha-panel-derecha" aria-label="Ocultar panel lateral">›</button><div class="panel-contenido"><div class="pestanas-panel"><button class="activo" data-pestana-derecha="fragmentos">Libreta</button><button data-pestana-derecha="perfil">Configuración</button></div><div id="contenido-perfil" hidden><details class="panel-seccion grupo-configuracion" open><summary>Interfaz</summary><div class="contenido-grupo-configuracion">
+    </div></aside><section id="vista-principal" class="vista-principal"></section><aside id="panel-inspector" class="panel panel-derecho" aria-label="Libreta y configuración"><button id="alternar-panel-inspector" class="flecha-panel flecha-panel-derecha" aria-label="Ocultar panel lateral">›</button><div class="panel-contenido"><header class="cabecera-preferencias"><h1 id="titulo-preferencias" tabindex="-1">Configuración</h1><p>Preferencias locales de Carlector</p></header><div class="pestanas-panel"><button class="activo" data-pestana-derecha="fragmentos">Libreta</button><button data-pestana-derecha="perfil">Configuración</button></div><div id="contenido-perfil" hidden><details id="configuracion-interfaz" class="panel-seccion grupo-configuracion" open><summary>Interfaz</summary><div class="contenido-grupo-configuracion">
     <div class="lista-visibilidad-interfaz" aria-label="Elementos visibles">${crear_controles_interfaz()}</div>
     <fieldset class="dimensiones-interfaz"><legend>Dimensiones</legend>
     <div class="campo"><div class="campo-linea"><label for="ancho-biblioteca">Ancho Biblioteca</label><output id="valor-ancho-biblioteca"></output></div><input id="ancho-biblioteca" data-disposicion-interfaz="ancho_biblioteca" type="range" min="180" max="420" step="1"></div>
@@ -2327,12 +2366,14 @@ function montar_aplicacion(): void {
     <div class="campo"><div class="encabezado-campo"><label>Temas</label><button id="abrir-biblioteca-temas" class="boton-biblioteca-temas" aria-label="Abrir biblioteca de temas" title="Biblioteca de temas">▦</button></div><div class="temas-predefinidos"><button data-tema-preset="diurno">Diurno</button><button data-tema-preset="nocturno">Nocturno</button><button data-tema-preset="sepia">Sepia</button><button data-tema-preset="contraste">Contraste</button></div></div>
     <div class="campo"><label>Colores personalizados</label><div class="colores-personalizados">${Object.entries(perfil_actual.colores).map(([nombre, valor]) => `<label>${nombre}<input type="color" data-color-interfaz="${nombre}" value="${valor}"></label>`).join("")}</div></div>
     <div class="campo"><div class="campo-linea"><label for="tamano">Tamaño</label><span id="valor-tamano"></span></div><input id="tamano" type="range" min="12" max="40" value="${perfil_actual.tamano_fuente}"></div></div></details>
-    <details class="panel-seccion grupo-configuracion" open><summary>Lectura</summary><div class="contenido-grupo-configuracion">
+    <details id="configuracion-archivos" class="panel-seccion grupo-configuracion"><summary>Archivos</summary><div class="contenido-grupo-configuracion"><p class="ayuda-campo">Formatos admitidos: PDF con capa de texto, EPUB estructurado y Markdown. Los originales permanecen en su ubicación.</p></div></details>
+    <details id="configuracion-biblioteca" class="panel-seccion grupo-configuracion"><summary>Biblioteca</summary><div class="contenido-grupo-configuracion"><p class="ayuda-campo">${Math.max(0, documentos.length - 1)} documentos y ${carpetas.length} carpetas locales. La organización no mueve ni elimina originales.</p></div></details>
+    <details id="configuracion-lectura" class="panel-seccion grupo-configuracion" open><summary>Lectura</summary><div class="contenido-grupo-configuracion">
     <div class="campo"><label for="modo-lectura-selector">Presentación</label><select id="modo-lectura-selector"><option value="continua">Lectura continua</option><option value="rsvp">RSVP centrado</option></select></div>
     <div class="campo" data-solo-rsvp><label for="unidad-rsvp">Unidad RSVP</label><select id="unidad-rsvp"><option value="palabra">Una palabra</option><option value="frase">Frase</option></select></div>
     <details class="menu-omisiones-voz"><summary>Contenido en voz</summary><div class="contenido-menu-omisiones"><div class="campo"><label for="matematica">Matemática en voz</label><select id="matematica"><option value="leer">Leer</option><option value="omitir">Omitir</option><option value="indicar">Decir «ecuación»</option></select></div><fieldset class="lista-omisiones-voz"><legend>Omitir al leer</legend><label><input id="saltar-citas" type="checkbox"> Citas bibliográficas</label><label><input type="checkbox" checked disabled> Símbolos ilegibles</label></fieldset></div></details>
     <div class="campo campo-linea"><label for="auto-scroll">Auto-scroll</label><input id="auto-scroll" class="interruptor" type="checkbox"></div></div></details>
-    <details class="panel-seccion grupo-configuracion" open><summary><span>Voz</span><button id="abrir-repositorios-voz" class="boton-biblioteca-temas" aria-label="Administrar repositorios de voz" title="Repositorios de voz">⬡</button></summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea campo-voz-habilitada"><label for="voz-habilitada">Voz habilitada</label><input id="voz-habilitada" class="interruptor" type="checkbox"></div><div class="campo"><label for="motor-voz">Motor</label><select id="motor-voz"><option value="sistema">TTS del sistema · experimental</option><option value="kokoro_onnx" ${kokoro_instalado ? "" : "disabled"}>Kokoro ONNX${kokoro_instalado ? " · verificado" : " · no instalado"}</option></select></div><div class="campo" data-solo-kokoro><label for="idioma-voz">Paquete de idioma</label><select id="idioma-voz"><option value="es">Español genérico</option><option value="en-us">Inglés · Estados Unidos</option><option value="en-gb">Inglés · Reino Unido</option></select></div><div class="campo" data-solo-kokoro><label for="voz-base">Voz compatible</label><select id="voz-base"></select></div><div class="control-velocidad-voz" data-solo-con-voz><label>Velocidad de reproducción</label><div class="velocidad-linea"><button id="velocidad-menos" class="velocidad-ajuste" aria-label="Reducir velocidad en 0.1">−</button><input id="velocidad" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.velocidad}"><button id="velocidad-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad en 0.1">+</button><span id="valor-velocidad"></span></div><div class="velocidades-rapidas"><button data-velocidad="1">1×</button><button data-velocidad="1.5">1.5×</button><button data-velocidad="2">2×</button></div></div><p class="ayuda-campo" data-solo-kokoro>Idioma y voz se sincronizan automáticamente para evitar combinaciones incompatibles.</p></div></details><details class="panel-seccion grupo-configuracion"><summary>Sistema</summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea"><label for="mostrar-informes-error">Mostrar informes de error</label><input id="mostrar-informes-error" class="interruptor" type="checkbox" ${informes_error_habilitados ? "checked" : ""}></div><fieldset class="atajos-configurables"><legend>Atajos de teclado</legend>${Object.entries(ETIQUETAS_ATAJOS).map(([accion, etiqueta]) => `<label for="atajo-${accion}">${etiqueta}</label><input id="atajo-${accion}" data-atajo="${accion}" value="${describir_atajo(perfil_actual.atajos[accion as AccionAtajo])}" readonly aria-describedby="ayuda-atajos estado-atajos">`).join("")}<p id="ayuda-atajos">Selecciona un campo y pulsa la combinación nueva. Escape cancela.</p><p id="estado-atajos" role="status"></p><button id="restaurar-atajos" class="boton" type="button">Restaurar atajos</button></fieldset></div></details></div><div id="ubicacion-libreta-panel"><section id="contenido-fragmentos" class="panel-seccion"></section></div></div></aside></div>
+    <details id="configuracion-voz" class="panel-seccion grupo-configuracion" open><summary><span>Voz</span><button id="abrir-repositorios-voz" class="boton-biblioteca-temas" aria-label="Administrar repositorios de voz" title="Repositorios de voz">⬡</button></summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea campo-voz-habilitada"><label for="voz-habilitada">Voz habilitada</label><input id="voz-habilitada" class="interruptor" type="checkbox"></div><div class="campo"><label for="motor-voz">Motor</label><select id="motor-voz"><option value="sistema">TTS del sistema · experimental</option><option value="kokoro_onnx" ${kokoro_instalado ? "" : "disabled"}>Kokoro ONNX${kokoro_instalado ? " · verificado" : " · no instalado"}</option></select></div><div class="campo" data-solo-kokoro><label for="idioma-voz">Paquete de idioma</label><select id="idioma-voz"><option value="es">Español genérico</option><option value="en-us">Inglés · Estados Unidos</option><option value="en-gb">Inglés · Reino Unido</option></select></div><div class="campo" data-solo-kokoro><label for="voz-base">Voz compatible</label><select id="voz-base"></select></div><div class="control-velocidad-voz" data-solo-con-voz><label>Velocidad de reproducción</label><div class="velocidad-linea"><button id="velocidad-menos" class="velocidad-ajuste" aria-label="Reducir velocidad en 0.1">−</button><input id="velocidad" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.velocidad}"><button id="velocidad-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad en 0.1">+</button><span id="valor-velocidad"></span></div><div class="velocidades-rapidas"><button data-velocidad="1">1×</button><button data-velocidad="1.5">1.5×</button><button data-velocidad="2">2×</button></div></div><p class="ayuda-campo" data-solo-kokoro>Idioma y voz se sincronizan automáticamente para evitar combinaciones incompatibles.</p></div></details><details id="configuracion-avanzada" class="panel-seccion grupo-configuracion"><summary>Avanzado</summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea"><label for="mostrar-informes-error">Mostrar informes de error</label><input id="mostrar-informes-error" class="interruptor" type="checkbox" ${informes_error_habilitados ? "checked" : ""}></div><fieldset class="atajos-configurables"><legend>Atajos de teclado</legend>${Object.entries(ETIQUETAS_ATAJOS).map(([accion, etiqueta]) => `<label for="atajo-${accion}">${etiqueta}</label><input id="atajo-${accion}" data-atajo="${accion}" value="${describir_atajo(perfil_actual.atajos[accion as AccionAtajo])}" readonly aria-describedby="ayuda-atajos estado-atajos">`).join("")}<p id="ayuda-atajos">Selecciona un campo y pulsa la combinación nueva. Escape cancela.</p><p id="estado-atajos" role="status"></p><button id="restaurar-atajos" class="boton" type="button">Restaurar atajos</button></fieldset></div></details></div><div id="ubicacion-libreta-panel"><section id="contenido-fragmentos" class="panel-seccion"></section></div></div></aside></div>
     <div id="menu-agregar" class="menu-agregar" hidden><button id="anadir-archivo">Añadir archivo</button><button id="anadir-carpeta">Añadir carpeta del sistema</button><button id="crear-carpeta">Crear carpeta virtual</button></div><div id="menu-contextual" class="menu-agregar menu-contextual" hidden></div><section id="biblioteca-temas" class="modal-temas" hidden><div class="dialogo-temas"><header><div><h2>Biblioteca de temas</h2><p>Paletas locales para lectura e interfaz</p></div><button id="cerrar-biblioteca-temas" aria-label="Cerrar">×</button></header><div id="lista-biblioteca-temas" class="lista-biblioteca-temas"></div><footer><button id="guardar-tema-actual" class="boton primario">Guardar tema actual</button></footer></div></section><section id="repositorios-voz" class="modal-temas" hidden><div class="dialogo-temas dialogo-repositorios"><header><h2>Repositorios de voz</h2><button id="cerrar-repositorios-voz" aria-label="Cerrar">×</button></header><div id="lista-repositorios-voz" class="lista-repositorios-voz"></div><footer><button id="actualizar-estado-voz" class="boton">Comprobar estado</button></footer></div></section>
     <section id="libreta-flotante" class="libreta-flotante" aria-labelledby="titulo-libreta-flotante" hidden><header id="asa-libreta-flotante"><strong id="titulo-libreta-flotante">Libreta</strong><button id="cerrar-libreta-flotante" aria-label="Cerrar Libreta flotante">×</button></header><div id="contenido-libreta-flotante" class="contenido-libreta-flotante"></div></section><section id="informador-error" class="informador-error" role="alertdialog" aria-labelledby="error-contexto" aria-describedby="error-detalle" hidden><div><header><strong id="error-contexto">Error de Carlector</strong><button id="cerrar-informador-error" aria-label="Cerrar">×</button></header><p id="error-detalle"></p><small id="error-fecha"></small><footer><label><input id="no-mostrar-errores" type="checkbox"> No volver a mostrar</label><button id="aceptar-informador-error" class="boton primario">Cerrar</button></footer></div></section><section id="carga-importacion" class="carga-importacion" role="status" aria-live="polite" hidden><strong>Cargando biblioteca</strong><span id="carga-nombre"></span><progress id="carga-progreso" max="100"></progress><small id="carga-estado"></small></section><button id="abrir-libreta-flotante" type="button" aria-label="Abrir Libreta flotante" aria-expanded="false" title="Abrir Libreta flotante">↗</button><button id="salir-modo-enfoque" type="button" aria-label="Salir del modo lectura">×</button>
     <footer class="control-inferior"><div class="control-documento"><strong id="documento-actual"></strong></div><div class="reproductor"><button id="anterior" class="boton-icono" aria-label="Fragmento anterior">←</button><button id="reproducir" class="reproducir" aria-label="Reproducir" title="Reproducir o pausar · Space">▶</button><button id="siguiente" class="boton-icono" aria-label="Fragmento siguiente">→</button></div><div class="control-velocidad" data-solo-sin-voz><div class="velocidad-linea"><button id="palabras-menos" class="velocidad-ajuste" aria-label="Reducir palabras por minuto">−</button><input id="palabras-minuto" type="range" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto}"><button id="palabras-mas" class="velocidad-ajuste" aria-label="Aumentar palabras por minuto">+</button><span id="valor-palabras-minuto"></span></div><div class="velocidades-rapidas"><button data-palabras-minuto="200">200</button><button data-palabras-minuto="300">300</button><button data-palabras-minuto="450">450</button></div></div></footer></div>`;
@@ -2480,8 +2521,7 @@ function montar_aplicacion(): void {
   document.querySelector("#cerrar-informador-error")?.addEventListener("click", cerrar_informador_error);
   document.querySelector("#aceptar-informador-error")?.addEventListener("click", cerrar_informador_error);
   document.querySelector<HTMLInputElement>("#mostrar-informes-error")?.addEventListener("change", (evento) => {
-    informes_error_habilitados = (evento.currentTarget as HTMLInputElement).checked;
-    persistencia.guardarInformesError(informes_error_habilitados);
+    actualizar_informes_error((evento.currentTarget as HTMLInputElement).checked);
   });
   document.querySelectorAll<HTMLInputElement>("[data-atajo]").forEach((control) => control.addEventListener("keydown", (evento) => configurar_atajo(control, evento)));
   document.querySelector("#restaurar-atajos")?.addEventListener("click", () => { actualizar_perfil({ atajos: ATAJOS_PREDETERMINADOS }); const estado = document.querySelector<HTMLElement>("#estado-atajos"); if (estado) estado.textContent = "Atajos restaurados."; });
@@ -2508,18 +2548,7 @@ function montar_aplicacion(): void {
   document.querySelector("#velocidad-menos")?.addEventListener("click", () => establecer_velocidad(ajustar_velocidad(perfil_actual.velocidad, -0.1)));
   document.querySelector("#velocidad-mas")?.addEventListener("click", () => establecer_velocidad(ajustar_velocidad(perfil_actual.velocidad, 0.1)));
   document.querySelectorAll<HTMLButtonElement>("[data-velocidad]").forEach((boton) => boton.addEventListener("click", () => establecer_velocidad(Number(boton.dataset.velocidad))));
-  const matematica = document.querySelector<HTMLSelectElement>("#matematica");
-  const saltar_citas = document.querySelector<HTMLInputElement>("#saltar-citas");
-  const auto_scroll = document.querySelector<HTMLInputElement>("#auto-scroll");
-  const voz_habilitada = document.querySelector<HTMLInputElement>("#voz-habilitada");
-  const modo_lectura = document.querySelector<HTMLSelectElement>("#modo-lectura-selector");
-  const unidad_rsvp = document.querySelector<HTMLSelectElement>("#unidad-rsvp");
-  if (matematica) matematica.value = perfil_actual.politica_matematica;
-  if (saltar_citas) saltar_citas.checked = perfil_actual.saltar_citas;
-  if (auto_scroll) auto_scroll.checked = perfil_actual.auto_scroll;
-  if (voz_habilitada) voz_habilitada.checked = perfil_actual.voz_habilitada;
-  if (modo_lectura) modo_lectura.value = perfil_actual.modo_lectura;
-  if (unidad_rsvp) unidad_rsvp.value = perfil_actual.unidad_rsvp;
+  sincronizar_campos_perfil();
   document.addEventListener("click", (evento) => {
     const dentro_contextual = evento.target instanceof Element && evento.target.closest("#menu-contextual");
     const dentro_agregar = evento.target instanceof Element && evento.target.closest("#menu-agregar, #abrir-menu-agregar");
@@ -2548,10 +2577,15 @@ function montar_aplicacion(): void {
   window.addEventListener("resize", redibujar_pdf);
   enlazar_eventos_biblioteca();
   if (es_interfaz_movil()) perfil_actual = normalizar_perfil({ ...perfil_actual, componentes: { ...perfil_actual.componentes, biblioteca: false, inspector: false } });
-  aplicar_perfil(); renderizar_panel_izquierdo(); renderizar_panel_fragmentos(); renderizar_biblioteca(); actualizar_panel_perfil(); actualizar_controles(); renderizar_pestanas_documentos();
+  aplicar_perfil(); renderizar_panel_izquierdo(); renderizar_panel_fragmentos(); renderizar_biblioteca(); sincronizar_campos_perfil(); actualizar_controles(); renderizar_pestanas_documentos();
   void actualizar_estado_kokoro();
-  void inicializar_apertura_archivos_nativa().catch((error) => informar_error("Apertura de documentos", error));
-  if (!isTauri() && sesion_pestanas.activa) void abrir_documento(sesion_pestanas.activa);
+  void inicializar_sincronizacion_perfil().catch((error) => informar_error("Sincronización de preferencias", error));
+  if (!ES_VENTANA_PREFERENCIAS) {
+    void inicializar_apertura_archivos_nativa().catch((error) => informar_error("Apertura de documentos", error));
+    if (!isTauri() && sesion_pestanas.activa) void abrir_documento(sesion_pestanas.activa);
+  } else {
+    requestAnimationFrame(() => document.querySelector<HTMLElement>("#titulo-preferencias")?.focus());
+  }
 }
 
 function restablecer_origen_interfaz(): void {

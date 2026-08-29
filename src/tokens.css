@@ -19,6 +19,7 @@
   --z-toast: 300;
   --duration-fast: 140ms;
   --ease-out: cubic-bezier(.2,.8,.2,1);
+  --ancho-contenido-preferencias: 42rem;
   --color-canvas: var(--fondo);
   --color-surface: var(--superficie);
   --color-panel: var(--panel);

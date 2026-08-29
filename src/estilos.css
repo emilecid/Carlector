@@ -2,9 +2,9 @@
 * { box-sizing:border-box; }
 html { width:100%; height:100%; overflow:hidden; }
 body { margin:0; min-width:0; height:100vh; height:100dvh; overflow:hidden; overscroll-behavior:none; background:var(--fondo); color:var(--texto); }
-button,input,select { font:inherit; color:inherit; }
+button,input,select,textarea { font:inherit; color:inherit; }
 button { border:0; cursor:pointer; }
-button:focus-visible,input:focus-visible,select:focus-visible { outline:3px solid color-mix(in srgb,var(--acento) 40%,transparent); outline-offset:2px; }
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible { outline:3px solid color-mix(in srgb,var(--acento) 40%,transparent); outline-offset:2px; }
 .aplicacion { display:grid; grid-template-rows:var(--alto-cabecera) minmax(0,1fr) var(--alto-reproductor); height:100vh; height:100dvh; }
 .barra-superior { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:var(--space-3); padding-inline:var(--space-5); border-bottom:1px solid var(--color-border); background:color-mix(in srgb,var(--color-surface),transparent 3%); box-shadow:0 1px 0 rgb(255 255 255 / 32%); }
 .pestanas { display:flex; align-self:stretch; gap:4px; min-width:0; overflow:auto hidden; }
@@ -43,6 +43,7 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:3px soli
 .panel { position:relative; min-width:0; background:color-mix(in srgb,var(--color-panel),var(--color-surface) 16%); border-right:1px solid var(--color-border); overflow:hidden; }
 .panel-derecho { border:0; border-left:1px solid var(--borde); background:var(--superficie); }
 .panel-contenido { min-width:235px; height:100%; padding-bottom:62px; overflow:auto; }
+.cabecera-preferencias { display:none; }
 .pestanas-panel { display:grid; grid-template-columns:1fr 1fr; gap:4px; padding:10px 10px 0; border-bottom:1px solid var(--borde); }
 .pestanas-panel button { padding:9px 5px; color:var(--atenuado); background:transparent; border-bottom:2px solid transparent; font-size:12px; font-weight:700; }
 .pestanas-panel button.activo { color:var(--texto); border-color:var(--acento); }
@@ -378,6 +379,18 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:3px soli
 .sin-herramientas-pdf .herramientas-pdf { display:none; }
 .sin-herramientas-pdf .lector-cabecera:has(.herramientas-pdf) { display:none; }
 .sin-acceso-libreta #abrir-libreta-flotante { display:none; }
+.ventana-preferencias .aplicacion { grid-template-rows:minmax(0,1fr); }
+.ventana-preferencias .contenido { grid-template-columns:minmax(0,1fr); }
+.ventana-preferencias :is(.barra-superior,#panel-biblioteca,#vista-principal,.control-inferior,#abrir-libreta-flotante,#salir-modo-enfoque) { display:none; }
+.ventana-preferencias #panel-inspector { display:block; min-width:0; border:0; background:var(--color-surface); }
+.ventana-preferencias #panel-inspector>.flecha-panel,.ventana-preferencias #panel-inspector .pestanas-panel { display:none; }
+.ventana-preferencias #panel-inspector .panel-contenido { display:block!important; width:100%; min-width:0; height:100%; padding:0; overflow:auto; }
+.ventana-preferencias .cabecera-preferencias { position:sticky; z-index:2; top:0; display:block; max-width:var(--ancho-contenido-preferencias); margin-inline:auto; padding:var(--space-6) var(--space-5) var(--space-4); border-bottom:1px solid var(--color-border); background:color-mix(in srgb,var(--color-surface),transparent 4%); }
+.ventana-preferencias .cabecera-preferencias h1 { margin:0; color:var(--color-text); font-size:var(--text-xl); }
+.ventana-preferencias .cabecera-preferencias p { margin:var(--space-1) 0 0; color:var(--color-text-muted); font-size:var(--text-sm); }
+.ventana-preferencias #contenido-perfil { width:min(100%,var(--ancho-contenido-preferencias)); margin-inline:auto; padding-bottom:var(--space-6); }
+.ventana-preferencias #contenido-perfil>.grupo-configuracion { margin:var(--space-3) var(--space-5) 0; border:1px solid var(--color-border); border-radius:var(--radius-control); background:var(--color-panel); overflow:clip; }
+.ventana-preferencias #contenido-perfil>.grupo-configuracion>summary { background:var(--color-surface); }
 @media(max-width:1100px){
   :root { --ancho-panel-izquierdo:34px; --ancho-panel-derecho:34px; --alto-reproductor:68px; }
   .barra-superior { grid-template-columns:minmax(0,1fr) auto; padding:0 10px; gap:7px; }

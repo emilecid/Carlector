@@ -1,6 +1,7 @@
 mod biblioteca;
 mod kokoro;
 pub mod markdown;
+mod preferencias;
 
 use std::fs;
 use std::sync::{Arc, Mutex};
@@ -179,6 +180,7 @@ pub fn ejecutar() {
         .plugin(tauri_plugin_opener::init())
         .manage(ArchivosAbiertos(Mutex::new(EstadoArchivosAbiertos::default())))
         .setup(|aplicacion| {
+            preferencias::instalar_menu(aplicacion)?;
             let directorio_datos = aplicacion.path().app_data_dir()?;
             fs::create_dir_all(&directorio_datos)?;
             let ruta_anterior = directorio_datos.join("lector.db");
