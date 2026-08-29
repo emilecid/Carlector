@@ -120,6 +120,8 @@ export interface PerfilLectura {
   tamano_fuente: number;
   interlineado: number;
   ancho_lectura: number;
+  ritmo_general: number;
+  velocidades_sincronizadas: boolean;
   velocidad: number;
   auto_scroll: boolean;
   modo_enfoque: boolean;
@@ -128,6 +130,7 @@ export interface PerfilLectura {
   modo_lectura: "continua" | "rsvp";
   unidad_rsvp: "palabra" | "frase";
   palabras_por_minuto: number;
+  palabras_por_minuto_rsvp: number;
   voz_habilitada: boolean;
   motor_voz: "sistema" | "kokoro_onnx";
   idioma_voz: string;

@@ -14,7 +14,7 @@ import { abrir_pestana, ajustar_proporciones_paneles, cerrar_pestana, normalizar
 import { resolver_control_paquete_voz } from "./core/interfaz_voz.ts";
 import { crear_informe_error } from "./core/informador_errores.ts";
 import { crear_exportacion_libreta, crear_html_exportacion_libreta } from "./core/libreta.ts";
-import { ajustar_palabras_por_minuto, ajustar_velocidad, clases_visibilidad_paneles, combinar_componentes_documento, PERFIL_PREDETERMINADO, TEMAS_PREDEFINIDOS, normalizar_perfil, type PerfilLecturaParcial } from "./core/perfiles.ts";
+import { ajustar_palabras_por_minuto, ajustar_ritmo_general, ajustar_velocidad, clases_visibilidad_paneles, combinar_componentes_documento, PERFIL_PREDETERMINADO, TEMAS_PREDEFINIDOS, normalizar_perfil, velocidades_desde_ritmo, type PerfilLecturaParcial } from "./core/perfiles.ts";
 import { segmentar_bloques, segmentar_texto } from "./core/segmentacion.ts";
 import { agrupar_locuciones, indice_locucion_en_posicion } from "./core/tts.ts";
 import { ajustar_zoom_pdf, cambio_zoom_gesto_pdf, indice_de_punto_pdf, indice_de_seleccion_pdf, indice_inicial_pagina, mapear_fragmentos_pdf, pagina_de_fragmento, rango_relativo_fragmento_pdf, rango_relativo_unidad_pdf, rango_textual_unidad_pdf, resolver_pagina_pdf, type RangoTextoPdf } from "./core/visor_pdf.ts";
@@ -1465,7 +1465,7 @@ function reproducir_rsvp(): void {
   actualizar_visor_rsvp();
   const palabras = Math.max(1, unidad.split(/\s+/u).filter(Boolean).length);
   const pausa = /[.!?…]$/u.test(unidad) ? 1.65 : /[,;:]$/u.test(unidad) ? 1.25 : 1;
-  temporizador_avance = window.setTimeout(avanzar, Math.max(80, palabras / perfil_actual.palabras_por_minuto * 60_000 * pausa));
+  temporizador_avance = window.setTimeout(avanzar, Math.max(80, palabras / perfil_actual.palabras_por_minuto_rsvp * 60_000 * pausa));
 }
 
 function programar_plan_rsvp_kokoro(plan: PasoRsvp[], posicion: number, indice_inicial: number, generacion: number): void {
@@ -2159,8 +2159,11 @@ async function establecer_asociacion_archivo(formato: EstadoAsociacionArchivo["f
 function actualizar_panel_perfil(): void {
   const tamano = document.querySelector<HTMLElement>("#valor-tamano");
   const velocidad = document.querySelector<HTMLElement>("#valor-velocidad");
+  const palabras_rsvp = document.querySelector<HTMLElement>("#valor-palabras-minuto-rsvp");
   if (tamano) tamano.textContent = `${perfil_actual.tamano_fuente}px`;
   if (velocidad) velocidad.textContent = `${perfil_actual.velocidad.toFixed(1)}×`;
+  if (palabras_rsvp) palabras_rsvp.textContent = `${perfil_actual.palabras_por_minuto_rsvp}`;
+  document.querySelectorAll<HTMLElement>("[data-valor-ritmo-general]").forEach((salida) => { salida.textContent = `${perfil_actual.ritmo_general.toFixed(1)}×`; });
   document.querySelectorAll<HTMLButtonElement>("[data-componente-interfaz]").forEach((boton) => {
     const componente = boton.dataset.componenteInterfaz as keyof PerfilLectura["componentes"];
     const visible = perfil_actual.componentes[componente];
@@ -2186,8 +2189,7 @@ function actualizar_panel_perfil(): void {
     const accion = control.dataset.atajo as AccionAtajo;
     control.value = describir_atajo(perfil_actual.atajos[accion]);
   });
-  const palabras = document.querySelector<HTMLElement>("#valor-palabras-minuto");
-  if (palabras) palabras.textContent = `${perfil_actual.palabras_por_minuto}`;
+  document.querySelectorAll<HTMLElement>("[data-valor-palabras-minuto]").forEach((salida) => { salida.textContent = `${perfil_actual.palabras_por_minuto}`; });
   document.querySelectorAll<HTMLElement>("[data-solo-rsvp]").forEach((elemento) => { elemento.hidden = perfil_actual.modo_lectura !== "rsvp"; });
   const motor = document.querySelector<HTMLSelectElement>("#motor-voz");
   const opcion_kokoro = motor?.querySelector<HTMLOptionElement>("option[value='kokoro_onnx']");
@@ -2196,6 +2198,10 @@ function actualizar_panel_perfil(): void {
   document.querySelectorAll<HTMLElement>("[data-solo-kokoro]").forEach((elemento) => { elemento.hidden = !mostrar_configuracion_kokoro(perfil_actual.motor_voz); });
   document.querySelectorAll<HTMLElement>("[data-solo-sin-voz]").forEach((elemento) => { elemento.hidden = perfil_actual.voz_habilitada; });
   document.querySelectorAll<HTMLElement>("[data-solo-con-voz]").forEach((elemento) => { elemento.hidden = !perfil_actual.voz_habilitada; });
+  document.querySelectorAll<HTMLElement>("[data-velocidad-maestra]").forEach((elemento) => { elemento.hidden = !perfil_actual.velocidades_sincronizadas; });
+  document.querySelectorAll<HTMLElement>("[data-velocidades-separadas]").forEach((elemento) => { elemento.hidden = perfil_actual.velocidades_sincronizadas; });
+  document.querySelectorAll<HTMLElement>("[data-velocidad-voz-individual]").forEach((elemento) => { elemento.hidden = perfil_actual.velocidades_sincronizadas || !perfil_actual.voz_habilitada; });
+  document.querySelectorAll<HTMLElement>("[data-velocidad-visual-inferior]").forEach((elemento) => { elemento.hidden = perfil_actual.velocidades_sincronizadas || perfil_actual.voz_habilitada; });
   const idioma = document.querySelector<HTMLSelectElement>("#idioma-voz");
   const voz = document.querySelector<HTMLSelectElement>("#voz-base");
   if (idioma) idioma.value = perfil_actual.idioma_voz;
@@ -2214,8 +2220,13 @@ function sincronizar_campos_perfil(): void {
   sincronizar_controles_colores();
   const valores: Array<[string, string | number | boolean]> = [
     ["tamano", perfil_actual.tamano_fuente],
+    ["ritmo-general", perfil_actual.ritmo_general],
+    ["ritmo-general-inferior", perfil_actual.ritmo_general],
+    ["velocidades-sincronizadas", perfil_actual.velocidades_sincronizadas],
     ["velocidad", perfil_actual.velocidad],
     ["palabras-minuto", perfil_actual.palabras_por_minuto],
+    ["palabras-minuto-inferior", perfil_actual.palabras_por_minuto],
+    ["palabras-minuto-rsvp", perfil_actual.palabras_por_minuto_rsvp],
     ["matematica", perfil_actual.politica_matematica],
     ["saltar-citas", perfil_actual.saltar_citas],
     ["auto-scroll", perfil_actual.auto_scroll],
@@ -2348,18 +2359,34 @@ async function actualizar_estado_kokoro(): Promise<void> {
 }
 
 function establecer_velocidad(velocidad: number): void {
+  aplicar_cambio_velocidades({ velocidad });
+}
+
+function aplicar_cambio_velocidades(cambios: PerfilLecturaParcial): void {
   const continuar = reproduciendo;
   detener_voz();
-  actualizar_perfil({ velocidad });
-  const control = document.querySelector<HTMLInputElement>("#velocidad");
-  if (control) control.value = String(perfil_actual.velocidad);
+  actualizar_perfil(cambios);
   if (continuar) reproducir_fragmento();
 }
 
 function establecer_palabras_por_minuto(palabras: number): void {
-  actualizar_perfil({ palabras_por_minuto: palabras });
-  const control = document.querySelector<HTMLInputElement>("#palabras-minuto");
-  if (control) control.value = String(perfil_actual.palabras_por_minuto);
+  aplicar_cambio_velocidades({ palabras_por_minuto: palabras });
+}
+
+function establecer_palabras_por_minuto_rsvp(palabras: number): void {
+  aplicar_cambio_velocidades({ palabras_por_minuto_rsvp: palabras });
+}
+
+function establecer_ritmo_general(ritmo: number): void {
+  aplicar_cambio_velocidades(velocidades_desde_ritmo(ritmo));
+}
+
+function alternar_sincronizacion_velocidades(sincronizadas: boolean): void {
+  if (sincronizadas) {
+    aplicar_cambio_velocidades({ velocidades_sincronizadas: true, ...velocidades_desde_ritmo(perfil_actual.velocidad) });
+    return;
+  }
+  aplicar_cambio_velocidades({ velocidades_sincronizadas: false });
 }
 
 function actualizar_controles(): void {
@@ -2428,12 +2455,17 @@ function montar_aplicacion(): void {
     <details id="configuracion-lectura" class="panel-seccion grupo-configuracion" open><summary>Lectura</summary><div class="contenido-grupo-configuracion">
     <div class="campo"><label for="modo-lectura-selector">Presentación</label><select id="modo-lectura-selector"><option value="continua">Lectura continua</option><option value="rsvp">RSVP centrado</option></select></div>
     <div class="campo" data-solo-rsvp><label for="unidad-rsvp">Unidad RSVP</label><select id="unidad-rsvp"><option value="palabra">Una palabra</option><option value="frase">Frase</option></select></div>
+    <div class="campo campo-linea"><label for="velocidades-sincronizadas">Sincronizar velocidades</label><input id="velocidades-sincronizadas" class="interruptor" type="checkbox" aria-describedby="ayuda-sincronizacion-velocidades"></div>
+    <p id="ayuda-sincronizacion-velocidades" class="ayuda-campo">Un ritmo controla voz, lectura continua y RSVP. Al separarlas, cada velocidad conserva su valor.</p>
+    <div class="control-velocidad-voz" data-velocidad-maestra><label for="ritmo-general">Ritmo general</label><div class="velocidad-linea"><button id="ritmo-menos" class="velocidad-ajuste" aria-label="Reducir ritmo general en 0.1">−</button><input id="ritmo-general" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.ritmo_general}"><button id="ritmo-mas" class="velocidad-ajuste" aria-label="Aumentar ritmo general en 0.1">+</button><span data-valor-ritmo-general></span></div><div class="velocidades-rapidas"><button data-ritmo-general="1">1×</button><button data-ritmo-general="1.5">1.5×</button><button data-ritmo-general="2">2×</button></div></div>
+    <div class="control-velocidad-voz" data-velocidades-separadas><label for="palabras-minuto">Lectura continua sin voz</label><div class="velocidad-linea"><button id="palabras-config-menos" class="velocidad-ajuste" aria-label="Reducir velocidad de lectura continua">−</button><input id="palabras-minuto" type="range" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto}"><button id="palabras-config-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad de lectura continua">+</button><span data-valor-palabras-minuto></span></div></div>
+    <div class="control-velocidad-voz" data-velocidades-separadas><label for="palabras-minuto-rsvp">RSVP sin voz</label><div class="velocidad-linea"><button id="rsvp-minuto-menos" class="velocidad-ajuste" aria-label="Reducir velocidad RSVP">−</button><input id="palabras-minuto-rsvp" type="range" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto_rsvp}"><button id="rsvp-minuto-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad RSVP">+</button><span id="valor-palabras-minuto-rsvp"></span></div></div>
     <details class="menu-omisiones-voz"><summary>Contenido en voz</summary><div class="contenido-menu-omisiones"><div class="campo"><label for="matematica">Matemática en voz</label><select id="matematica"><option value="leer">Leer</option><option value="omitir">Omitir</option><option value="indicar">Decir «ecuación»</option></select></div><fieldset class="lista-omisiones-voz"><legend>Omitir al leer</legend><label><input id="saltar-citas" type="checkbox"> Citas bibliográficas</label><label><input type="checkbox" checked disabled> Símbolos ilegibles</label></fieldset></div></details>
     <div class="campo campo-linea"><label for="auto-scroll">Auto-scroll</label><input id="auto-scroll" class="interruptor" type="checkbox"></div></div></details>
-    <details id="configuracion-voz" class="panel-seccion grupo-configuracion" open><summary><span>Voz</span><button id="abrir-repositorios-voz" class="boton-biblioteca-temas" aria-label="Administrar repositorios de voz" title="Repositorios de voz">⬡</button></summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea campo-voz-habilitada"><label for="voz-habilitada">Voz habilitada</label><input id="voz-habilitada" class="interruptor" type="checkbox"></div><div class="campo"><label for="motor-voz">Motor</label><select id="motor-voz"><option value="sistema">TTS del sistema · experimental</option><option value="kokoro_onnx" ${kokoro_instalado ? "" : "disabled"}>Kokoro ONNX${kokoro_instalado ? " · verificado" : " · no instalado"}</option></select></div><div class="campo" data-solo-kokoro><label for="idioma-voz">Paquete de idioma</label><select id="idioma-voz"><option value="es">Español genérico</option><option value="en-us">Inglés · Estados Unidos</option><option value="en-gb">Inglés · Reino Unido</option></select></div><div class="campo" data-solo-kokoro><label for="voz-base">Voz compatible</label><select id="voz-base"></select></div><div class="control-velocidad-voz" data-solo-con-voz><label>Velocidad de reproducción</label><div class="velocidad-linea"><button id="velocidad-menos" class="velocidad-ajuste" aria-label="Reducir velocidad en 0.1">−</button><input id="velocidad" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.velocidad}"><button id="velocidad-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad en 0.1">+</button><span id="valor-velocidad"></span></div><div class="velocidades-rapidas"><button data-velocidad="1">1×</button><button data-velocidad="1.5">1.5×</button><button data-velocidad="2">2×</button></div></div><p class="ayuda-campo" data-solo-kokoro>Idioma y voz se sincronizan automáticamente para evitar combinaciones incompatibles.</p></div></details><details id="configuracion-avanzada" class="panel-seccion grupo-configuracion"><summary>Avanzado</summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea"><label for="mostrar-informes-error">Mostrar informes de error</label><input id="mostrar-informes-error" class="interruptor" type="checkbox" ${informes_error_habilitados ? "checked" : ""}></div><fieldset class="atajos-configurables"><legend>Atajos de teclado</legend>${Object.entries(ETIQUETAS_ATAJOS).map(([accion, etiqueta]) => `<label for="atajo-${accion}">${etiqueta}</label><input id="atajo-${accion}" data-atajo="${accion}" value="${describir_atajo(perfil_actual.atajos[accion as AccionAtajo])}" readonly aria-describedby="ayuda-atajos estado-atajos">`).join("")}<p id="ayuda-atajos">Selecciona un campo y pulsa la combinación nueva. Escape cancela.</p><p id="estado-atajos" role="status"></p><button id="restaurar-atajos" class="boton" type="button">Restaurar atajos</button></fieldset></div></details></div><div id="ubicacion-libreta-panel"><section id="contenido-fragmentos" class="panel-seccion"></section></div></div></aside></div>
+    <details id="configuracion-voz" class="panel-seccion grupo-configuracion" open><summary><span>Voz</span><button id="abrir-repositorios-voz" class="boton-biblioteca-temas" aria-label="Administrar repositorios de voz" title="Repositorios de voz">⬡</button></summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea campo-voz-habilitada"><label for="voz-habilitada">Voz habilitada</label><input id="voz-habilitada" class="interruptor" type="checkbox"></div><div class="campo"><label for="motor-voz">Motor</label><select id="motor-voz"><option value="sistema">TTS del sistema · experimental</option><option value="kokoro_onnx" ${kokoro_instalado ? "" : "disabled"}>Kokoro ONNX${kokoro_instalado ? " · verificado" : " · no instalado"}</option></select></div><div class="campo" data-solo-kokoro><label for="idioma-voz">Paquete de idioma</label><select id="idioma-voz"><option value="es">Español genérico</option><option value="en-us">Inglés · Estados Unidos</option><option value="en-gb">Inglés · Reino Unido</option></select></div><div class="campo" data-solo-kokoro><label for="voz-base">Voz compatible</label><select id="voz-base"></select></div><div class="control-velocidad-voz" data-velocidad-voz-individual><label for="velocidad">Velocidad de reproducción</label><div class="velocidad-linea"><button id="velocidad-menos" class="velocidad-ajuste" aria-label="Reducir velocidad en 0.1">−</button><input id="velocidad" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.velocidad}"><button id="velocidad-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad en 0.1">+</button><span id="valor-velocidad"></span></div><div class="velocidades-rapidas"><button data-velocidad="1">1×</button><button data-velocidad="1.5">1.5×</button><button data-velocidad="2">2×</button></div></div><p class="ayuda-campo" data-solo-kokoro>Idioma y voz se sincronizan automáticamente para evitar combinaciones incompatibles.</p></div></details><details id="configuracion-avanzada" class="panel-seccion grupo-configuracion"><summary>Avanzado</summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea"><label for="mostrar-informes-error">Mostrar informes de error</label><input id="mostrar-informes-error" class="interruptor" type="checkbox" ${informes_error_habilitados ? "checked" : ""}></div><fieldset class="atajos-configurables"><legend>Atajos de teclado</legend>${Object.entries(ETIQUETAS_ATAJOS).map(([accion, etiqueta]) => `<label for="atajo-${accion}">${etiqueta}</label><input id="atajo-${accion}" data-atajo="${accion}" value="${describir_atajo(perfil_actual.atajos[accion as AccionAtajo])}" readonly aria-describedby="ayuda-atajos estado-atajos">`).join("")}<p id="ayuda-atajos">Selecciona un campo y pulsa la combinación nueva. Escape cancela.</p><p id="estado-atajos" role="status"></p><button id="restaurar-atajos" class="boton" type="button">Restaurar atajos</button></fieldset></div></details></div><div id="ubicacion-libreta-panel"><section id="contenido-fragmentos" class="panel-seccion"></section></div></div></aside></div>
     <div id="menu-agregar" class="menu-agregar" hidden><button id="anadir-archivo">Añadir archivo</button><button id="anadir-carpeta">Añadir carpeta del sistema</button><button id="crear-carpeta">Crear carpeta virtual</button></div><div id="menu-contextual" class="menu-agregar menu-contextual" hidden></div><section id="biblioteca-temas" class="modal-temas" hidden><div class="dialogo-temas"><header><div><h2>Biblioteca de temas</h2><p>Paletas locales para lectura e interfaz</p></div><button id="cerrar-biblioteca-temas" aria-label="Cerrar">×</button></header><div id="lista-biblioteca-temas" class="lista-biblioteca-temas"></div><footer><button id="guardar-tema-actual" class="boton primario">Guardar tema actual</button></footer></div></section><section id="repositorios-voz" class="modal-temas" hidden><div class="dialogo-temas dialogo-repositorios"><header><h2>Repositorios de voz</h2><button id="cerrar-repositorios-voz" aria-label="Cerrar">×</button></header><div id="lista-repositorios-voz" class="lista-repositorios-voz"></div><footer><button id="actualizar-estado-voz" class="boton">Comprobar estado</button></footer></div></section>
     <section id="libreta-flotante" class="libreta-flotante" aria-labelledby="titulo-libreta-flotante" hidden><header id="asa-libreta-flotante"><strong id="titulo-libreta-flotante">Libreta</strong><button id="cerrar-libreta-flotante" aria-label="Cerrar Libreta flotante">×</button></header><div id="contenido-libreta-flotante" class="contenido-libreta-flotante"></div></section><section id="informador-error" class="informador-error" role="alertdialog" aria-labelledby="error-contexto" aria-describedby="error-detalle" hidden><div><header><strong id="error-contexto">Error de Carlector</strong><button id="cerrar-informador-error" aria-label="Cerrar">×</button></header><p id="error-detalle"></p><small id="error-fecha"></small><footer><label><input id="no-mostrar-errores" type="checkbox"> No volver a mostrar</label><button id="aceptar-informador-error" class="boton primario">Cerrar</button></footer></div></section><section id="carga-importacion" class="carga-importacion" role="status" aria-live="polite" hidden><strong>Cargando biblioteca</strong><span id="carga-nombre"></span><progress id="carga-progreso" max="100"></progress><small id="carga-estado"></small></section><button id="abrir-libreta-flotante" type="button" aria-label="Abrir Libreta flotante" aria-expanded="false" title="Abrir Libreta flotante">↗</button><button id="salir-modo-enfoque" type="button" aria-label="Salir del modo lectura">×</button>
-    <footer class="control-inferior"><div class="control-documento"><strong id="documento-actual"></strong></div><div class="reproductor"><button id="anterior" class="boton-icono" aria-label="Fragmento anterior">←</button><button id="reproducir" class="reproducir" aria-label="Reproducir" title="Reproducir o pausar · Space">▶</button><button id="siguiente" class="boton-icono" aria-label="Fragmento siguiente">→</button></div><div class="control-velocidad" data-solo-sin-voz><div class="velocidad-linea"><button id="palabras-menos" class="velocidad-ajuste" aria-label="Reducir palabras por minuto">−</button><input id="palabras-minuto" type="range" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto}"><button id="palabras-mas" class="velocidad-ajuste" aria-label="Aumentar palabras por minuto">+</button><span id="valor-palabras-minuto"></span></div><div class="velocidades-rapidas"><button data-palabras-minuto="200">200</button><button data-palabras-minuto="300">300</button><button data-palabras-minuto="450">450</button></div></div></footer></div>`;
+    <footer class="control-inferior"><div class="control-documento"><strong id="documento-actual"></strong></div><div class="reproductor"><button id="anterior" class="boton-icono" aria-label="Fragmento anterior">←</button><button id="reproducir" class="reproducir" aria-label="Reproducir" title="Reproducir o pausar · Space">▶</button><button id="siguiente" class="boton-icono" aria-label="Fragmento siguiente">→</button></div><div class="control-velocidad" data-velocidad-maestra><div class="velocidad-linea"><button id="ritmo-inferior-menos" class="velocidad-ajuste" aria-label="Reducir ritmo general en 0.1">−</button><input id="ritmo-general-inferior" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.ritmo_general}"><button id="ritmo-inferior-mas" class="velocidad-ajuste" aria-label="Aumentar ritmo general en 0.1">+</button><span data-valor-ritmo-general></span></div><div class="velocidades-rapidas"><button data-ritmo-general="1">1×</button><button data-ritmo-general="1.5">1.5×</button><button data-ritmo-general="2">2×</button></div></div><div class="control-velocidad" data-velocidad-visual-inferior><div class="velocidad-linea"><button id="palabras-inferior-menos" class="velocidad-ajuste" aria-label="Reducir palabras por minuto">−</button><input id="palabras-minuto-inferior" type="range" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto}"><button id="palabras-inferior-mas" class="velocidad-ajuste" aria-label="Aumentar palabras por minuto">+</button><span data-valor-palabras-minuto></span></div><div class="velocidades-rapidas"><button data-palabras-minuto="200">200</button><button data-palabras-minuto="300">300</button><button data-palabras-minuto="450">450</button></div></div></footer></div>`;
   aplicacion.insertAdjacentHTML("beforeend", `<section id="vista-previa-libreta" class="modal-temas vista-previa-libreta" role="dialog" aria-modal="true" aria-labelledby="titulo-vista-previa-libreta" hidden><div class="dialogo-exportacion-libreta"><header class="acciones-vista-previa-libreta"><div><h2 id="titulo-vista-previa-libreta">Vista previa de Libreta</h2><p>En macOS, usa PDF → Guardar como PDF en el diálogo siguiente.</p></div><button id="cerrar-vista-previa-libreta" aria-label="Cerrar vista previa">×</button></header><div id="contenido-exportacion-libreta" class="contenido-exportacion-libreta"></div><footer class="acciones-vista-previa-libreta"><button id="imprimir-libreta-pdf" class="boton primario" type="button">Guardar PDF…</button></footer></div></section>`);
 
   ([["#biblioteca-temas", "Biblioteca de temas"], ["#repositorios-voz", "Repositorios de voz"]] as Array<[string, string]>).forEach(([selector, etiqueta]) => {
@@ -2601,10 +2633,18 @@ function montar_aplicacion(): void {
   document.querySelector<HTMLSelectElement>("#motor-voz")?.addEventListener("change", (evento) => usar_motor_voz((evento.currentTarget as HTMLSelectElement).value));
   document.querySelector<HTMLSelectElement>("#idioma-voz")?.addEventListener("change", (evento) => actualizar_idioma_kokoro((evento.currentTarget as HTMLSelectElement).value));
   document.querySelector<HTMLSelectElement>("#voz-base")?.addEventListener("change", (evento) => { detener_voz(); actualizar_perfil({ voz_base: (evento.currentTarget as HTMLSelectElement).value }); });
-  document.querySelector<HTMLInputElement>("#palabras-minuto")?.addEventListener("input", (evento) => establecer_palabras_por_minuto(Number((evento.currentTarget as HTMLInputElement).value)));
-  document.querySelector("#palabras-menos")?.addEventListener("click", () => establecer_palabras_por_minuto(ajustar_palabras_por_minuto(perfil_actual.palabras_por_minuto, -10)));
-  document.querySelector("#palabras-mas")?.addEventListener("click", () => establecer_palabras_por_minuto(ajustar_palabras_por_minuto(perfil_actual.palabras_por_minuto, 10)));
+  document.querySelector<HTMLInputElement>("#velocidades-sincronizadas")?.addEventListener("change", (evento) => alternar_sincronizacion_velocidades((evento.currentTarget as HTMLInputElement).checked));
+  document.querySelectorAll<HTMLInputElement>("#ritmo-general, #ritmo-general-inferior").forEach((control) => control.addEventListener("input", (evento) => establecer_ritmo_general(Number((evento.currentTarget as HTMLInputElement).value))));
+  document.querySelectorAll("#ritmo-menos, #ritmo-inferior-menos").forEach((boton) => boton.addEventListener("click", () => establecer_ritmo_general(ajustar_ritmo_general(perfil_actual.ritmo_general, -0.1))));
+  document.querySelectorAll("#ritmo-mas, #ritmo-inferior-mas").forEach((boton) => boton.addEventListener("click", () => establecer_ritmo_general(ajustar_ritmo_general(perfil_actual.ritmo_general, 0.1))));
+  document.querySelectorAll<HTMLButtonElement>("[data-ritmo-general]").forEach((boton) => boton.addEventListener("click", () => establecer_ritmo_general(Number(boton.dataset.ritmoGeneral))));
+  document.querySelectorAll<HTMLInputElement>("#palabras-minuto, #palabras-minuto-inferior").forEach((control) => control.addEventListener("input", (evento) => establecer_palabras_por_minuto(Number((evento.currentTarget as HTMLInputElement).value))));
+  document.querySelectorAll("#palabras-config-menos, #palabras-inferior-menos").forEach((boton) => boton.addEventListener("click", () => establecer_palabras_por_minuto(ajustar_palabras_por_minuto(perfil_actual.palabras_por_minuto, -10))));
+  document.querySelectorAll("#palabras-config-mas, #palabras-inferior-mas").forEach((boton) => boton.addEventListener("click", () => establecer_palabras_por_minuto(ajustar_palabras_por_minuto(perfil_actual.palabras_por_minuto, 10))));
   document.querySelectorAll<HTMLButtonElement>("[data-palabras-minuto]").forEach((boton) => boton.addEventListener("click", () => establecer_palabras_por_minuto(Number(boton.dataset.palabrasMinuto))));
+  document.querySelector<HTMLInputElement>("#palabras-minuto-rsvp")?.addEventListener("input", (evento) => establecer_palabras_por_minuto_rsvp(Number((evento.currentTarget as HTMLInputElement).value)));
+  document.querySelector("#rsvp-minuto-menos")?.addEventListener("click", () => establecer_palabras_por_minuto_rsvp(ajustar_palabras_por_minuto(perfil_actual.palabras_por_minuto_rsvp, -10)));
+  document.querySelector("#rsvp-minuto-mas")?.addEventListener("click", () => establecer_palabras_por_minuto_rsvp(ajustar_palabras_por_minuto(perfil_actual.palabras_por_minuto_rsvp, 10)));
   document.querySelector<HTMLInputElement>("#velocidad")?.addEventListener("input", (evento) => establecer_velocidad(Number((evento.currentTarget as HTMLInputElement).value)));
   document.querySelector("#velocidad-menos")?.addEventListener("click", () => establecer_velocidad(ajustar_velocidad(perfil_actual.velocidad, -0.1)));
   document.querySelector("#velocidad-mas")?.addEventListener("click", () => establecer_velocidad(ajustar_velocidad(perfil_actual.velocidad, 0.1)));

@@ -1,6 +1,8 @@
 import type { ColoresInterfaz, ComponentesInterfaz, DisposicionInterfaz, PerfilLectura } from "./modelos";
 import { ATAJOS_PREDETERMINADOS, normalizar_atajos } from "./atajos.ts";
 
+const PALABRAS_POR_MINUTO_BASE = 300;
+
 export const TEMAS_PREDEFINIDOS: Record<string, { tema: PerfilLectura["tema"]; colores: ColoresInterfaz }> = {
   diurno: { tema: "claro", colores: { fondo: "#efeee9", superficie: "#f9f8f4", panel: "#e8e6df", borde: "#d3d0c6", texto: "#25241f", atenuado: "#716e65", acento: "#bc5c39", resaltado: "#f4c58e" } },
   nocturno: { tema: "oscuro", colores: { fondo: "#171816", superficie: "#20211e", panel: "#292a26", borde: "#3a3b36", texto: "#eceae3", atenuado: "#aaa79d", acento: "#db7a55", resaltado: "#d69a57" } },
@@ -16,6 +18,8 @@ export const PERFIL_PREDETERMINADO: PerfilLectura = {
   tamano_fuente: 20,
   interlineado: 1.72,
   ancho_lectura: 760,
+  ritmo_general: 1,
+  velocidades_sincronizadas: true,
   velocidad: 1,
   auto_scroll: true,
   modo_enfoque: false,
@@ -23,7 +27,8 @@ export const PERFIL_PREDETERMINADO: PerfilLectura = {
   saltar_citas: false,
   modo_lectura: "continua",
   unidad_rsvp: "frase",
-  palabras_por_minuto: 300,
+  palabras_por_minuto: PALABRAS_POR_MINUTO_BASE,
+  palabras_por_minuto_rsvp: PALABRAS_POR_MINUTO_BASE,
   voz_habilitada: true,
   motor_voz: "sistema",
   idioma_voz: "es",
@@ -98,6 +103,22 @@ export function ajustar_velocidad(velocidad: number, cambio: number): number {
   return Math.min(3, Math.max(0.5, Math.round((velocidad + cambio) * 10) / 10));
 }
 
+export function ajustar_ritmo_general(ritmo: number, cambio: number): number {
+  const valor = Number.isFinite(ritmo) ? ritmo : PERFIL_PREDETERMINADO.ritmo_general;
+  return Math.min(3, Math.max(0.5, Math.round((valor + cambio) * 10) / 10));
+}
+
+export function velocidades_desde_ritmo(ritmo: number): Pick<PerfilLectura, "ritmo_general" | "velocidad" | "palabras_por_minuto" | "palabras_por_minuto_rsvp"> {
+  const ritmo_general = ajustar_ritmo_general(ritmo, 0);
+  const palabras = Math.round((ritmo_general * PALABRAS_POR_MINUTO_BASE) / 10) * 10;
+  return {
+    ritmo_general,
+    velocidad: ritmo_general,
+    palabras_por_minuto: palabras,
+    palabras_por_minuto_rsvp: palabras,
+  };
+}
+
 export function ajustar_palabras_por_minuto(palabras: number, cambio: number): number {
   return Math.min(1200, Math.max(60, Math.round((palabras + cambio) / 10) * 10));
 }
@@ -108,16 +129,27 @@ export function normalizar_perfil(valor: PerfilLecturaParcial): PerfilLectura {
   void maximo_legacy;
   void palabras_rsvp_legacy;
   const colores_base = vigente.tema === "oscuro" ? TEMAS_PREDEFINIDOS.nocturno!.colores : PERFIL_PREDETERMINADO.colores;
+  const velocidad = limitar(vigente.velocidad, 0.5, 3, PERFIL_PREDETERMINADO.velocidad);
+  const palabras_por_minuto = Math.round(limitar(vigente.palabras_por_minuto, 60, 1200, PERFIL_PREDETERMINADO.palabras_por_minuto));
+  const palabras_por_minuto_rsvp = Math.round(limitar(vigente.palabras_por_minuto_rsvp, 60, 1200, palabras_por_minuto));
+  const perfil_legacy = vigente.velocidades_sincronizadas === undefined
+    && (vigente.velocidad !== undefined || vigente.palabras_por_minuto !== undefined || vigente.palabras_por_minuto_rsvp !== undefined);
+  const velocidades_sincronizadas = vigente.velocidades_sincronizadas === true
+    || (vigente.velocidades_sincronizadas === undefined && !perfil_legacy);
+  const ritmo_general = ajustar_ritmo_general(Number(vigente.ritmo_general ?? velocidad), 0);
+  const velocidades = velocidades_sincronizadas
+    ? velocidades_desde_ritmo(ritmo_general)
+    : { ritmo_general, velocidad, palabras_por_minuto, palabras_por_minuto_rsvp };
   return {
     ...PERFIL_PREDETERMINADO,
     ...vigente,
     tamano_fuente: Math.min(40, Math.max(12, Number(vigente.tamano_fuente ?? 20))),
     interlineado: Math.min(2.5, Math.max(1.1, Number(vigente.interlineado ?? 1.72))),
     ancho_lectura: Math.min(1200, Math.max(420, Number(vigente.ancho_lectura ?? 760))),
-    velocidad: Math.min(3, Math.max(0.5, Number(vigente.velocidad ?? 1))),
+    ...velocidades,
+    velocidades_sincronizadas,
     modo_lectura: vigente.modo_lectura === "rsvp" ? "rsvp" : "continua",
     unidad_rsvp: vigente.unidad_rsvp === "palabra" ? "palabra" : "frase",
-    palabras_por_minuto: Math.min(1200, Math.max(60, Math.round(Number(vigente.palabras_por_minuto ?? 300)))),
     saltar_citas: vigente.saltar_citas === true,
     voz_habilitada: vigente.voz_habilitada !== false,
     motor_voz: vigente.motor_voz === "kokoro_onnx" ? "kokoro_onnx" : "sistema",
