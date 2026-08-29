@@ -24,5 +24,12 @@ sayd-kokoro = "0.1.0"
 ndarray = "0.17"
 ndarray-npy = "0.10"
 sha2 = "0.10"
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["sync", "time"] }
 pulldown-cmark = "0.13"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = { version = "0.6.2", default-features = false, features = ["alloc"] }
+objc2 = { version = "0.6.4", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWorkspace", "block2", "objc2-uniform-type-identifiers"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSError", "NSString", "NSURL"] }
+objc2-uniform-type-identifiers = { version = "0.3.2", default-features = false, features = ["UTType"] }

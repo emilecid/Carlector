@@ -1,3 +1,4 @@
+mod asociaciones;
 mod biblioteca;
 mod kokoro;
 pub mod markdown;
@@ -193,7 +194,7 @@ pub fn ejecutar() {
             aplicacion.manage(EstadoAplicacion { biblioteca: Mutex::new(conexion), kokoro: Arc::new(Mutex::new(MotorKokoro::nuevo(&directorio_datos))) });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![estado_kokoro, instalar_kokoro, sintetizar_kokoro, listar_documentos, importar_documento, guardar_progreso, leer_documento, extraer_markdown, tomar_archivos_abiertos, listar_documentos_directorio, listar_carpetas, crear_carpeta, renombrar_carpeta, eliminar_carpeta, mover_documento, editar_documento, reordenar_documentos, eliminar_documento, guardar_fragmento, listar_fragmentos, eliminar_fragmento, cambiar_destacado_fragmento, guardar_nota, listar_notas, eliminar_nota, guardar_cache_documento, leer_cache_documento])
+        .invoke_handler(tauri::generate_handler![asociaciones::estado_asociaciones_archivo, asociaciones::establecer_asociacion_archivo, estado_kokoro, instalar_kokoro, sintetizar_kokoro, listar_documentos, importar_documento, guardar_progreso, leer_documento, extraer_markdown, tomar_archivos_abiertos, listar_documentos_directorio, listar_carpetas, crear_carpeta, renombrar_carpeta, eliminar_carpeta, mover_documento, editar_documento, reordenar_documentos, eliminar_documento, guardar_fragmento, listar_fragmentos, eliminar_fragmento, cambiar_destacado_fragmento, guardar_nota, listar_notas, eliminar_nota, guardar_cache_documento, leer_cache_documento])
         .build(tauri::generate_context!())
         .expect("No fue posible construir Carlector");
     aplicacion.run(|manejador, evento| {

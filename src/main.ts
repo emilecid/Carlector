@@ -89,6 +89,12 @@ let indice_fragmento_seguimiento_pdf = -1;
 const reproductor_kokoro = new ReproductorWebAudio();
 let desbloqueo_audio_kokoro: Promise<void> = Promise.resolve();
 interface SolicitudAudioKokoro { promesa: Promise<AudioBuffer>; lista: boolean }
+interface EstadoAsociacionArchivo {
+  formato: "pdf" | "epub" | "markdown";
+  extension: string;
+  predeterminada: boolean;
+  aplicacion_actual: string | null;
+}
 const audios_kokoro = new Map<string, SolicitudAudioKokoro>();
 let cadena_sintesis_kokoro: Promise<void> = Promise.resolve();
 let consulta_global = "";
@@ -2100,7 +2106,54 @@ async function inicializar_sincronizacion_perfil(): Promise<void> {
   await Promise.all([
     listen<PerfilLecturaParcial>("perfil-actualizado", ({ payload }) => actualizar_perfil(payload, false)),
     listen<boolean>("informes-error-actualizados", ({ payload }) => actualizar_informes_error(payload, false)),
+    listen("asociaciones-archivo-actualizadas", () => void actualizar_estado_asociaciones_archivo()),
   ]);
+}
+
+function renderizar_estado_asociaciones_archivo(estados: EstadoAsociacionArchivo[]): void {
+  estados.forEach((estado) => {
+    const texto = document.querySelector<HTMLElement>(`[data-estado-asociacion="${estado.formato}"]`);
+    const boton = document.querySelector<HTMLButtonElement>(`[data-establecer-asociacion="${estado.formato}"]`);
+    if (texto) texto.textContent = estado.predeterminada ? "Carlector es predeterminada" : `Actual: ${estado.aplicacion_actual ?? "sin aplicación"}`;
+    if (boton) {
+      boton.disabled = estado.predeterminada;
+      boton.textContent = estado.predeterminada ? "En uso" : "Usar Carlector";
+    }
+  });
+}
+
+async function actualizar_estado_asociaciones_archivo(): Promise<void> {
+  const salida = document.querySelector<HTMLElement>("#estado-asociaciones-archivo");
+  const lista = document.querySelector<HTMLElement>("#asociaciones-archivo");
+  if (!lista) return;
+  if (!isTauri()) {
+    if (salida) salida.textContent = "Disponible en Carlector para macOS.";
+    return;
+  }
+  lista.setAttribute("aria-busy", "true");
+  try {
+    renderizar_estado_asociaciones_archivo(await invoke<EstadoAsociacionArchivo[]>("estado_asociaciones_archivo"));
+  } catch (error) {
+    if (salida) salida.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    lista.removeAttribute("aria-busy");
+  }
+}
+
+async function establecer_asociacion_archivo(formato: EstadoAsociacionArchivo["formato"]): Promise<void> {
+  const salida = document.querySelector<HTMLElement>("#estado-asociaciones-archivo");
+  const boton = document.querySelector<HTMLButtonElement>(`[data-establecer-asociacion="${formato}"]`);
+  if (boton) boton.disabled = true;
+  if (salida) salida.textContent = `Solicitando a macOS el cambio para ${formato === "markdown" ? "Markdown" : formato.toUpperCase()}…`;
+  try {
+    const estados = await invoke<EstadoAsociacionArchivo[]>("establecer_asociacion_archivo", { formato });
+    renderizar_estado_asociaciones_archivo(estados);
+    if (salida) salida.textContent = "Aplicación predeterminada actualizada.";
+    if (isTauri()) await emit("asociaciones-archivo-actualizadas");
+  } catch (error) {
+    if (salida) salida.textContent = error instanceof Error ? error.message : String(error);
+    if (boton) boton.disabled = false;
+  }
 }
 
 function actualizar_panel_perfil(): void {
@@ -2366,7 +2419,11 @@ function montar_aplicacion(): void {
     <div class="campo"><div class="encabezado-campo"><label>Temas</label><button id="abrir-biblioteca-temas" class="boton-biblioteca-temas" aria-label="Abrir biblioteca de temas" title="Biblioteca de temas">▦</button></div><div class="temas-predefinidos"><button data-tema-preset="diurno">Diurno</button><button data-tema-preset="nocturno">Nocturno</button><button data-tema-preset="sepia">Sepia</button><button data-tema-preset="contraste">Contraste</button></div></div>
     <div class="campo"><label>Colores personalizados</label><div class="colores-personalizados">${Object.entries(perfil_actual.colores).map(([nombre, valor]) => `<label>${nombre}<input type="color" data-color-interfaz="${nombre}" value="${valor}"></label>`).join("")}</div></div>
     <div class="campo"><div class="campo-linea"><label for="tamano">Tamaño</label><span id="valor-tamano"></span></div><input id="tamano" type="range" min="12" max="40" value="${perfil_actual.tamano_fuente}"></div></div></details>
-    <details id="configuracion-archivos" class="panel-seccion grupo-configuracion"><summary>Archivos</summary><div class="contenido-grupo-configuracion"><p class="ayuda-campo">Formatos admitidos: PDF con capa de texto, EPUB estructurado y Markdown. Los originales permanecen en su ubicación.</p></div></details>
+    <details id="configuracion-archivos" class="panel-seccion grupo-configuracion"><summary>Archivos</summary><div class="contenido-grupo-configuracion"><p class="ayuda-campo">Formatos admitidos: PDF con capa de texto, EPUB estructurado y Markdown. Los originales permanecen en su ubicación.</p><div id="asociaciones-archivo" class="asociaciones-archivo" aria-label="Aplicaciones predeterminadas por formato">
+    <div><strong>PDF</strong><span data-estado-asociacion="pdf">Comprobando…</span><button class="boton" type="button" data-establecer-asociacion="pdf">Usar Carlector</button></div>
+    <div><strong>EPUB</strong><span data-estado-asociacion="epub">Comprobando…</span><button class="boton" type="button" data-establecer-asociacion="epub">Usar Carlector</button></div>
+    <div><strong>Markdown</strong><span data-estado-asociacion="markdown">Comprobando…</span><button class="boton" type="button" data-establecer-asociacion="markdown">Usar Carlector</button></div>
+    </div><p id="estado-asociaciones-archivo" role="status" aria-live="polite"></p></div></details>
     <details id="configuracion-biblioteca" class="panel-seccion grupo-configuracion"><summary>Biblioteca</summary><div class="contenido-grupo-configuracion"><p class="ayuda-campo">${Math.max(0, documentos.length - 1)} documentos y ${carpetas.length} carpetas locales. La organización no mueve ni elimina originales.</p></div></details>
     <details id="configuracion-lectura" class="panel-seccion grupo-configuracion" open><summary>Lectura</summary><div class="contenido-grupo-configuracion">
     <div class="campo"><label for="modo-lectura-selector">Presentación</label><select id="modo-lectura-selector"><option value="continua">Lectura continua</option><option value="rsvp">RSVP centrado</option></select></div>
@@ -2523,6 +2580,10 @@ function montar_aplicacion(): void {
   document.querySelector<HTMLInputElement>("#mostrar-informes-error")?.addEventListener("change", (evento) => {
     actualizar_informes_error((evento.currentTarget as HTMLInputElement).checked);
   });
+  document.querySelectorAll<HTMLButtonElement>("[data-establecer-asociacion]").forEach((boton) => boton.addEventListener("click", () => {
+    const formato = boton.dataset.establecerAsociacion as EstadoAsociacionArchivo["formato"];
+    void establecer_asociacion_archivo(formato);
+  }));
   document.querySelectorAll<HTMLInputElement>("[data-atajo]").forEach((control) => control.addEventListener("keydown", (evento) => configurar_atajo(control, evento)));
   document.querySelector("#restaurar-atajos")?.addEventListener("click", () => { actualizar_perfil({ atajos: ATAJOS_PREDETERMINADOS }); const estado = document.querySelector<HTMLElement>("#estado-atajos"); if (estado) estado.textContent = "Atajos restaurados."; });
   document.querySelector("#biblioteca-temas")?.addEventListener("click", (evento) => { if (evento.target === evento.currentTarget) cerrar_modal("#biblioteca-temas"); });
@@ -2579,6 +2640,7 @@ function montar_aplicacion(): void {
   if (es_interfaz_movil()) perfil_actual = normalizar_perfil({ ...perfil_actual, componentes: { ...perfil_actual.componentes, biblioteca: false, inspector: false } });
   aplicar_perfil(); renderizar_panel_izquierdo(); renderizar_panel_fragmentos(); renderizar_biblioteca(); sincronizar_campos_perfil(); actualizar_controles(); renderizar_pestanas_documentos();
   void actualizar_estado_kokoro();
+  void actualizar_estado_asociaciones_archivo();
   void inicializar_sincronizacion_perfil().catch((error) => informar_error("Sincronización de preferencias", error));
   if (!ES_VENTANA_PREFERENCIAS) {
     void inicializar_apertura_archivos_nativa().catch((error) => informar_error("Apertura de documentos", error));

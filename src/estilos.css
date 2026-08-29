@@ -319,6 +319,13 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .atajos-configurables input { width:100%; text-align:center; cursor:pointer; }
 .atajos-configurables p,.atajos-configurables button { grid-column:1/-1; }
 .atajos-configurables p { margin:2px 0; color:var(--atenuado); font-size:10px; line-height:1.35; }
+.asociaciones-archivo { display:grid; gap:7px; margin-top:12px; }
+.asociaciones-archivo>div { display:grid; grid-template-columns:minmax(72px,.55fr) minmax(0,1fr) auto; align-items:center; gap:10px; padding:9px 10px; border:1px solid var(--borde); border-radius:9px; background:var(--fondo); }
+.asociaciones-archivo strong { font-size:12px; }
+.asociaciones-archivo span { min-width:0; overflow:hidden; color:var(--atenuado); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
+.asociaciones-archivo .boton { padding:7px 9px; font-size:11px; }
+.asociaciones-archivo .boton:disabled { cursor:default; opacity:.68; }
+#estado-asociaciones-archivo { min-height:1.4em; margin:9px 0 0; color:var(--atenuado); font-size:11px; }
 .lista-biblioteca-temas { overflow:auto; padding:22px 24px; }
 .grupo-temas+ .grupo-temas { margin-top:25px; }
 .grupo-temas h3 { margin:0 0 11px; color:var(--atenuado); font-size:11px; letter-spacing:.12em; text-transform:uppercase; }
