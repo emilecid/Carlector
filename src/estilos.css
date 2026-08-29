@@ -54,6 +54,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .encabezado-panel { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .encabezado-panel .panel-titulo { margin-bottom:0; }
 .agregar-biblioteca { display:grid; place-items:center; width:27px; height:27px; border-radius:8px; color:white; background:var(--acento); font-size:20px; line-height:1; }
+.agregar-biblioteca:disabled { color:var(--atenuado); background:var(--panel); cursor:not-allowed; opacity:.72; }
 .menu-agregar { position:fixed; z-index:100; width:158px; max-height:calc(100vh - 16px); padding:5px; overflow:auto; border:1px solid var(--borde); border-radius:10px; background:var(--superficie); box-shadow:0 12px 34px rgb(31 35 33 / 24%); }
 .menu-agregar button { display:block; width:100%; padding:8px 9px; border-radius:7px; background:transparent; text-align:left; font-size:12px; }
 .menu-agregar button:hover { background:var(--panel); }

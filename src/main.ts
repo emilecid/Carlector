@@ -373,7 +373,7 @@ function renderizar_biblioteca(consulta = consulta_biblioteca): void {
   const carpeta_activa = filtro_biblioteca.tipo === "carpeta" ? filtro_biblioteca.carpeta_id : null;
   const titulo = carpeta_activa ? carpetas.find(({ id }) => id === carpeta_activa)?.nombre ?? "Carpeta" : filtro_biblioteca.tipo === "todos" ? "Todos los libros" : filtro_biblioteca.tipo === "en_progreso" ? "En progreso" : "Biblioteca";
   const contenido = `<header class="cabecera-vista">
-    <div><h1>${escapar_html(titulo)}</h1><p>${resultados.length} documentos · todo permanece en este equipo</p></div>
+    <div><h1>${escapar_html(titulo)}</h1><p>${resultados.length} documentos</p></div>
     </header>${resultados.length ? `<div class="cuadricula">${resultados.map(crear_portada).join("")}</div>` : `<section class="estado-vacio-biblioteca"><span aria-hidden="true">◇</span><strong>Esta vista está vacía</strong><p>Añade un libro o elige otra carpeta.</p></section>`}`;
   const biblioteca = principal.querySelector<HTMLElement>(".biblioteca");
   if (biblioteca) biblioteca.innerHTML = contenido;
@@ -393,9 +393,9 @@ function enlazar_eventos_biblioteca(): void {
   });
   principal.addEventListener("contextmenu", (evento) => {
     const tarjeta = obtener_tarjeta_documento(evento.target);
-    if (!tarjeta) return;
     evento.preventDefault();
-    abrir_menu_documento(tarjeta.dataset.documento ?? "", evento.clientX, evento.clientY);
+    if (tarjeta) abrir_menu_documento(tarjeta.dataset.documento ?? "", evento.clientX, evento.clientY);
+    else if (vista_actual === "biblioteca") abrir_menu_agregar(evento.clientX, evento.clientY);
   });
   principal.addEventListener("dragstart", (evento) => {
     const tarjeta = obtener_tarjeta_documento(evento.target);
@@ -483,8 +483,15 @@ function renderizar_panel_biblioteca(): void {
   const cantidad_raiz = documentos.filter(({ carpeta_id }) => !carpeta_id).length;
   navegacion.innerHTML = `<button class="nav-item ${filtro_biblioteca.tipo === "raiz" ? "activo" : ""}" data-filtro="raiz">▦ Biblioteca <span class="nav-contador">${cantidad_raiz}</span></button><button class="nav-item ${filtro_biblioteca.tipo === "todos" ? "activo" : ""}" data-filtro="todos">≡ Todos <span class="nav-contador">${documentos.length}</span></button><button class="nav-item ${filtro_biblioteca.tipo === "en_progreso" ? "activo" : ""}" data-filtro="en_progreso">◷ En progreso <span class="nav-contador">${cantidad_progreso}</span></button>`;
   arbol.innerHTML = carpetas.length
-    ? carpetas.map((carpeta) => `<button class="nav-item ${filtro_biblioteca.tipo === "carpeta" && filtro_biblioteca.carpeta_id === carpeta.id ? "activo" : ""}" data-carpeta="${escapar_html(carpeta.id)}" title="Arrastra libros aquí; click derecho para editar">▸ ${escapar_html(carpeta.nombre)} <span class="nav-contador">${documentos.filter((documento) => documento.carpeta_id === carpeta.id).length}</span></button>`).join("")
-    : `<p class="carpetas-vacias">Sin carpetas. Usa + para añadir una.</p>`;
+    ? carpetas.map((carpeta) => `<button class="nav-item ${filtro_biblioteca.tipo === "carpeta" && filtro_biblioteca.carpeta_id === carpeta.id ? "activo" : ""}" data-carpeta="${escapar_html(carpeta.id)}" title="${carpeta.ruta ? "Carpeta enlazada al sistema" : "Carpeta virtual"}; arrastra libros aquí; click derecho para gestionar">${carpeta.ruta ? "▾" : "▸"} ${escapar_html(carpeta.nombre)} <span class="nav-contador">${documentos.filter((documento) => documento.carpeta_id === carpeta.id).length}</span></button>`).join("")
+    : `<p class="carpetas-vacias">Sin carpetas. Haz click derecho para añadir una.</p>`;
+  const carpeta_finder = carpeta_sistema_activa();
+  const boton_finder = document.querySelector<HTMLButtonElement>("#abrir-carpeta-finder");
+  if (boton_finder) {
+    boton_finder.disabled = !carpeta_finder;
+    boton_finder.title = carpeta_finder ? `Abrir ${carpeta_finder.nombre} en Finder` : "Añade una carpeta del sistema con click derecho";
+    boton_finder.setAttribute("aria-label", boton_finder.title);
+  }
   navegacion.querySelectorAll<HTMLElement>("[data-filtro]").forEach((boton) => boton.addEventListener("click", () => {
     filtro_biblioteca = { tipo: boton.dataset.filtro as "raiz" | "todos" | "en_progreso" };
     renderizar_panel_biblioteca(); renderizar_biblioteca();
@@ -1824,6 +1831,13 @@ function mostrar_menu_contextual(contenido: string, x: number, y: number): HTMLE
   return menu;
 }
 
+function abrir_menu_agregar(x: number, y: number): void {
+  const menu = document.querySelector<HTMLElement>("#menu-agregar");
+  if (!menu) return;
+  menu.hidden = false;
+  posicionar_superposicion(menu, { izquierda: x, superior: y, derecha: x, inferior: y });
+}
+
 function abrir_menu_documento(id: string, x: number, y: number): void {
   const documento = documentos.find((actual) => actual.id === id);
   if (!documento) return;
@@ -1916,7 +1930,10 @@ async function alternar_destacado_fragmento(id: string): Promise<void> {
 function abrir_menu_carpeta(id: string, x: number, y: number): void {
   const carpeta = carpetas.find((actual) => actual.id === id);
   if (!carpeta) return;
-  const menu = mostrar_menu_contextual(`<strong>${escapar_html(carpeta.nombre)}</strong><button data-accion="renombrar">Renombrar</button><button class="accion-peligrosa" data-accion="eliminar">Eliminar carpeta</button>`, x, y);
+  const acciones_sistema = carpeta.ruta ? `<button data-accion="abrir-finder">Abrir en Finder</button><button data-accion="sincronizar">Sincronizar</button>` : "";
+  const menu = mostrar_menu_contextual(`<strong>${escapar_html(carpeta.nombre)}</strong>${acciones_sistema}<button data-accion="renombrar">Renombrar</button><button class="accion-peligrosa" data-accion="eliminar">Eliminar carpeta</button>`, x, y);
+  menu?.querySelector("[data-accion='abrir-finder']")?.addEventListener("click", () => void abrir_carpeta_en_finder(carpeta));
+  menu?.querySelector("[data-accion='sincronizar']")?.addEventListener("click", () => void ejecutar_importacion(() => sincronizar_carpeta_sistema(carpeta), "No fue posible sincronizar la carpeta"));
   menu?.querySelector("[data-accion='renombrar']")?.addEventListener("click", () => void renombrar_carpeta_biblioteca(id));
   menu?.querySelector("[data-accion='eliminar']")?.addEventListener("click", () => void eliminar_carpeta_biblioteca(id));
 }
@@ -2045,10 +2062,11 @@ function convertir_documento_nativo(documento: Omit<DocumentoBiblioteca, "etique
 
 async function cargar_biblioteca_nativa(): Promise<void> {
   if (!isTauri()) return;
-  const [documentos_nativos, carpetas_nativas] = await Promise.all([
-    invoke<Array<Omit<DocumentoBiblioteca, "etiquetas">>>("listar_documentos"),
-    invoke<CarpetaBiblioteca[]>("listar_carpetas"),
-  ]);
+  const carpetas_nativas = await invoke<CarpetaBiblioteca[]>("listar_carpetas");
+  await Promise.all(carpetas_nativas.filter(({ ruta }) => Boolean(ruta)).map(async ({ id }) => {
+    try { await invoke("sincronizar_carpeta_sistema", { id }); } catch { return; }
+  }));
+  const documentos_nativos = await invoke<Array<Omit<DocumentoBiblioteca, "etiquetas">>>("listar_documentos");
   documentos = [DOCUMENTO_DEMOSTRACION, ...documentos_nativos.map(convertir_documento_nativo)];
   carpetas = carpetas_nativas;
   persistencia.guardarDocumentos(documentos);
@@ -2104,13 +2122,31 @@ async function importar_carpeta_nativa(): Promise<void> {
   const seleccion = await open({ directory: true, multiple: false, title: "Añadir carpeta a biblioteca" });
   if (!seleccion) return;
   mostrar_carga(seleccion.split(/[\\/]/).pop() ?? seleccion, 0, 0, "Buscando PDF, EPUB y Markdown");
-  const rutas = await invoke<string[]>("listar_documentos_directorio", { ruta: seleccion });
-  if (!rutas.length) { finalizar_carga(0); return; }
-  const nombre = seleccion.split(/[\\/]/).pop() ?? "Carpeta importada";
-  const carpeta = await crear_carpeta_biblioteca(nombre, false);
-  if (!carpeta) return;
+  const carpeta = await invoke<CarpetaBiblioteca>("vincular_carpeta_sistema", { ruta: seleccion });
+  const sincronizados = await invoke<Array<Omit<DocumentoBiblioteca, "etiquetas">>>("sincronizar_carpeta_sistema", { id: carpeta.id });
   filtro_biblioteca = { tipo: "carpeta", carpeta_id: carpeta.id };
-  await importar_rutas_nativas(rutas, carpeta.id);
+  await cargar_biblioteca_nativa();
+  finalizar_carga(sincronizados.length);
+}
+
+function carpeta_sistema_activa(): CarpetaBiblioteca | undefined {
+  const id_activa = filtro_biblioteca.tipo === "carpeta" ? filtro_biblioteca.carpeta_id : null;
+  const activa = id_activa ? carpetas.find(({ id }) => id === id_activa) : undefined;
+  return activa?.ruta ? activa : carpetas.find(({ ruta }) => Boolean(ruta));
+}
+
+async function abrir_carpeta_en_finder(carpeta = carpeta_sistema_activa()): Promise<void> {
+  if (!carpeta?.ruta || !isTauri()) return;
+  await invoke("abrir_carpeta_en_finder", { id: carpeta.id });
+  cerrar_menus_contextuales();
+}
+
+async function sincronizar_carpeta_sistema(carpeta: CarpetaBiblioteca): Promise<void> {
+  if (!carpeta.ruta || !isTauri()) return;
+  mostrar_carga(carpeta.nombre, 0, 0, "Sincronizando carpeta del sistema");
+  const sincronizados = await invoke<Array<Omit<DocumentoBiblioteca, "etiquetas">>>("sincronizar_carpeta_sistema", { id: carpeta.id });
+  await cargar_biblioteca_nativa();
+  finalizar_carga(sincronizados.length);
 }
 
 function mostrar_carga(nombre: string, indice: number, total: number, etapa: string): void {
@@ -2501,7 +2537,7 @@ function montar_aplicacion(): void {
   aplicacion.innerHTML = `<div class="aplicacion"><header class="barra-superior">
     <nav class="pestanas" aria-label="Documentos abiertos"><button class="pestana activa" data-vista="biblioteca">Biblioteca</button><span id="pestanas-documentos" class="pestanas-documentos" role="tablist"></span></nav>
     <div class="acciones-superiores"><button id="alternar-orientacion-mosaico" class="boton boton-mosaico" type="button" aria-label="Cambiar orientación del mosaico" title="Cambiar orientación del mosaico" hidden>▥</button><button id="modo-enfoque" class="boton">Modo lectura</button><input id="archivo" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" multiple><input id="carpeta" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" webkitdirectory multiple></div><div class="busqueda-global" role="search" aria-label="Buscar en la vista actual" hidden><input id="busqueda-global" type="search" placeholder="Buscar" aria-label="Texto que buscar"><span id="estado-busqueda-global" aria-live="polite"></span><button id="busqueda-anterior" aria-label="Resultado anterior">↑</button><button id="busqueda-siguiente" aria-label="Resultado siguiente">↓</button><button id="cerrar-busqueda-global" aria-label="Cerrar búsqueda">×</button></div></header>
-    <div class="contenido"><aside id="panel-biblioteca" class="panel"><button id="alternar-panel-biblioteca" class="flecha-panel flecha-panel-izquierda" aria-label="Ocultar biblioteca">‹</button><div class="panel-contenido"><div class="pestanas-panel"><button class="activo" data-pestana-izquierda="biblioteca">Biblioteca</button><button data-pestana-izquierda="indice">Índice</button></div><div id="contenido-biblioteca"><section class="panel-seccion"><div class="encabezado-panel"><h2 class="panel-titulo">Organización</h2><button id="abrir-menu-agregar" class="agregar-biblioteca" aria-label="Añadir a biblioteca" title="Añadir a biblioteca">+</button></div><nav id="navegacion-biblioteca" class="navegacion"></nav></section>
+    <div class="contenido"><aside id="panel-biblioteca" class="panel"><button id="alternar-panel-biblioteca" class="flecha-panel flecha-panel-izquierda" aria-label="Ocultar biblioteca">‹</button><div class="panel-contenido"><div class="pestanas-panel"><button class="activo" data-pestana-izquierda="biblioteca">Biblioteca</button><button data-pestana-izquierda="indice">Índice</button></div><div id="contenido-biblioteca"><section class="panel-seccion"><div class="encabezado-panel"><h2 class="panel-titulo">Organización</h2><button id="abrir-carpeta-finder" class="agregar-biblioteca" aria-label="Abrir carpeta en Finder" title="Abrir carpeta en Finder">▱</button></div><nav id="navegacion-biblioteca" class="navegacion"></nav></section>
     <section class="panel-seccion"><h2 class="panel-titulo">Carpetas</h2><nav id="carpetas-biblioteca" class="navegacion"></nav></section></div><section id="contenido-indice" class="panel-seccion" hidden></section>
     </div></aside><section id="vista-principal" class="vista-principal"></section><aside id="panel-inspector" class="panel panel-derecho" aria-label="Libreta y configuración"><button id="alternar-panel-inspector" class="flecha-panel flecha-panel-derecha" aria-label="Ocultar panel lateral">›</button><div class="panel-contenido"><header class="cabecera-preferencias"><h1 id="titulo-preferencias" tabindex="-1">Configuración</h1><p>Preferencias locales de Carlector</p></header><div class="pestanas-panel"><button class="activo" data-pestana-derecha="fragmentos">Libreta</button><button data-pestana-derecha="perfil">Configuración</button></div><div id="contenido-perfil" hidden><details id="configuracion-interfaz" class="panel-seccion grupo-configuracion" open><summary>Interfaz</summary><div class="contenido-grupo-configuracion">
     <div class="lista-visibilidad-interfaz" aria-label="Elementos visibles">${crear_controles_interfaz()}</div>
@@ -2630,16 +2666,13 @@ function montar_aplicacion(): void {
   document.querySelectorAll<HTMLElement>("[data-pestana-derecha]").forEach((boton) => boton.addEventListener("click", () => {
     pestana_derecha = boton.dataset.pestanaDerecha as "perfil" | "fragmentos"; renderizar_panel_fragmentos();
   }));
-  document.querySelector("#abrir-menu-agregar")?.addEventListener("click", (evento) => {
-    const boton = evento.currentTarget as HTMLButtonElement;
-    const menu = document.querySelector<HTMLElement>("#menu-agregar");
-    if (!menu) return;
-    const abrir = menu.hidden;
-    menu.hidden = !abrir;
-    if (abrir) {
-      const rectangulo = boton.getBoundingClientRect();
-      posicionar_superposicion(menu, { izquierda: rectangulo.left, superior: rectangulo.top, derecha: rectangulo.right, inferior: rectangulo.bottom });
-    }
+  document.querySelector("#abrir-carpeta-finder")?.addEventListener("click", () => {
+    if (isTauri()) void ejecutar_importacion(() => abrir_carpeta_en_finder(), "No fue posible abrir la carpeta en Finder");
+  });
+  document.querySelector<HTMLElement>("#contenido-biblioteca")?.addEventListener("contextmenu", (evento) => {
+    if (evento.target instanceof Element && evento.target.closest("[data-carpeta]")) return;
+    evento.preventDefault();
+    abrir_menu_agregar(evento.clientX, evento.clientY);
   });
   document.querySelector("#anadir-archivo")?.addEventListener("click", () => {
     const menu = document.querySelector<HTMLElement>("#menu-agregar");
@@ -2762,7 +2795,7 @@ function montar_aplicacion(): void {
   sincronizar_campos_perfil();
   document.addEventListener("click", (evento) => {
     const dentro_contextual = evento.target instanceof Element && evento.target.closest("#menu-contextual");
-    const dentro_agregar = evento.target instanceof Element && evento.target.closest("#menu-agregar, #abrir-menu-agregar");
+    const dentro_agregar = evento.target instanceof Element && evento.target.closest("#menu-agregar");
     if (!dentro_contextual) cerrar_menus_contextuales();
     if (!dentro_agregar) document.querySelector<HTMLElement>("#menu-agregar")?.setAttribute("hidden", "");
   });

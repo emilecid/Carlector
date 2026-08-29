@@ -55,6 +55,8 @@ pub struct Carpeta {
     pub id: String,
     pub nombre: String,
     pub orden: i64,
+    #[serde(default)]
+    pub ruta: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -113,7 +115,8 @@ pub fn abrir_base_datos(ruta: &Path) -> Result<RepositorioBiblioteca, ErrorBibli
          CREATE TABLE IF NOT EXISTS carpetas (
            id TEXT PRIMARY KEY,
            nombre TEXT NOT NULL,
-           orden INTEGER NOT NULL DEFAULT 0
+           orden INTEGER NOT NULL DEFAULT 0,
+           ruta TEXT
          );
          CREATE TABLE IF NOT EXISTS fragmentos_guardados (
            id TEXT PRIMARY KEY,
@@ -150,6 +153,8 @@ pub fn abrir_base_datos(ruta: &Path) -> Result<RepositorioBiblioteca, ErrorBibli
     migrar_columna_tabla(&conexion, "notas_documento", "fragmento_id", "TEXT")?;
     migrar_columna_tabla(&conexion, "notas_documento", "pagina", "INTEGER")?;
     migrar_columna_tabla(&conexion, "notas_documento", "ancla_json", "TEXT")?;
+    migrar_columna_tabla(&conexion, "carpetas", "ruta", "TEXT")?;
+    conexion.execute("CREATE UNIQUE INDEX IF NOT EXISTS carpetas_ruta ON carpetas(ruta) WHERE ruta IS NOT NULL", [])?;
     migrar_formato_markdown(&conexion)?;
     Ok(RepositorioBiblioteca { conexion })
 }
@@ -270,13 +275,47 @@ impl RepositorioBiblioteca {
         let id = format!("carpeta-{:x}", calcular_hash_ruta(&format!("{nombre}-{}", self.contar_carpetas()?)));
         let orden = self.contar_carpetas()?;
         self.conexion.execute("INSERT INTO carpetas (id, nombre, orden) VALUES (?1, ?2, ?3)", params![id, nombre, orden])?;
-        Ok(Carpeta { id, nombre: nombre.to_string(), orden })
+        Ok(Carpeta { id, nombre: nombre.to_string(), orden, ruta: None })
     }
 
     pub fn listar_carpetas(&self) -> Result<Vec<Carpeta>, ErrorBiblioteca> {
-        let mut consulta = self.conexion.prepare("SELECT id, nombre, orden FROM carpetas ORDER BY orden, nombre COLLATE NOCASE")?;
-        let filas = consulta.query_map([], |fila| Ok(Carpeta { id: fila.get(0)?, nombre: fila.get(1)?, orden: fila.get(2)? }))?;
+        let mut consulta = self.conexion.prepare("SELECT id, nombre, orden, ruta FROM carpetas ORDER BY orden, nombre COLLATE NOCASE")?;
+        let filas = consulta.query_map([], |fila| Ok(Carpeta { id: fila.get(0)?, nombre: fila.get(1)?, orden: fila.get(2)?, ruta: fila.get(3)? }))?;
         filas.collect::<Result<Vec<_>, _>>().map_err(ErrorBiblioteca::from)
+    }
+
+    pub fn vincular_carpeta_sistema(&self, ruta: &str) -> Result<Carpeta, ErrorBiblioteca> {
+        let ruta_directorio = PathBuf::from(ruta);
+        if !ruta_directorio.is_dir() { return Err(ErrorBiblioteca::ArchivoInexistente(ruta.to_string())); }
+        let ruta_canonica = ruta_directorio.canonicalize()?;
+        let ruta_texto = ruta_canonica.to_string_lossy().to_string();
+        let nombre = ruta_canonica.file_name().and_then(|valor| valor.to_str()).unwrap_or("Carpeta").to_string();
+        let id = format!("carpeta-{:x}", calcular_hash_ruta(&ruta_texto));
+        let orden = self.contar_carpetas()?;
+        self.conexion.execute("INSERT OR IGNORE INTO carpetas (id, nombre, orden, ruta) VALUES (?1, ?2, ?3, ?4)", params![id, nombre, orden, ruta_texto])?;
+        self.conexion.execute("UPDATE carpetas SET nombre = ?1 WHERE ruta = ?2", params![nombre, ruta_texto])?;
+        self.obtener_carpeta_por_ruta(&ruta_texto)
+    }
+
+    pub fn sincronizar_carpeta_sistema(&self, id: &str) -> Result<Vec<Documento>, ErrorBiblioteca> {
+        let ruta = self.ruta_carpeta_sistema(id)?;
+        for ruta_documento in descubrir_documentos_directorio(&ruta)? {
+            let documento = self.importar_documento(&ruta_documento)?;
+            self.mover_documento(&documento.id, Some(id))?;
+        }
+        let mut consulta = self.conexion.prepare(
+            "SELECT id, titulo, autor, formato, ruta, progreso, ultima_lectura, carpeta_id, orden, estado_lectura_json
+             FROM documentos WHERE carpeta_id = ?1 ORDER BY orden, titulo COLLATE NOCASE",
+        )?;
+        let filas = consulta.query_map([id], convertir_fila_documento)?;
+        filas.collect::<Result<Vec<_>, _>>().map_err(ErrorBiblioteca::from)
+    }
+
+    pub fn ruta_carpeta_sistema(&self, id: &str) -> Result<PathBuf, ErrorBiblioteca> {
+        let ruta: String = self.conexion.query_row("SELECT ruta FROM carpetas WHERE id = ?1 AND ruta IS NOT NULL", [id], |fila| fila.get(0))?;
+        let ruta_directorio = PathBuf::from(&ruta);
+        if !ruta_directorio.is_dir() { return Err(ErrorBiblioteca::ArchivoInexistente(ruta)); }
+        ruta_directorio.canonicalize().map_err(ErrorBiblioteca::from)
     }
 
     pub fn renombrar_carpeta(&self, id: &str, nombre: &str) -> Result<(), ErrorBiblioteca> {
@@ -418,6 +457,14 @@ impl RepositorioBiblioteca {
         self.conexion.query_row(
             "SELECT id, titulo, autor, formato, ruta, progreso, ultima_lectura, carpeta_id, orden, estado_lectura_json FROM documentos WHERE ruta = ?1",
             [ruta], convertir_fila_documento,
+        ).map_err(ErrorBiblioteca::from)
+    }
+
+    fn obtener_carpeta_por_ruta(&self, ruta: &str) -> Result<Carpeta, ErrorBiblioteca> {
+        self.conexion.query_row(
+            "SELECT id, nombre, orden, ruta FROM carpetas WHERE ruta = ?1",
+            [ruta],
+            |fila| Ok(Carpeta { id: fila.get(0)?, nombre: fila.get(1)?, orden: fila.get(2)?, ruta: fila.get(3)? }),
         ).map_err(ErrorBiblioteca::from)
     }
 }
@@ -623,6 +670,44 @@ mod pruebas {
         assert_eq!(nota_sin_fragmento.fragmento_id, None);
         assert_eq!(nota_sin_fragmento.pagina, Some(7));
         assert_eq!(nota_sin_fragmento.ancla, Some(ancla));
+        fs::remove_dir_all(directorio).expect("limpiar temporal");
+    }
+
+    #[test]
+    fn vincula_y_resincroniza_carpeta_real_sin_perder_progreso() {
+        let directorio = std::env::temp_dir().join(format!("carlector-biblioteca-real-{}", std::process::id()));
+        let documentos = directorio.join("Ciencias");
+        let subcarpeta = documentos.join("Artículos");
+        fs::create_dir_all(&subcarpeta).expect("crear temporal");
+        fs::write(documentos.join("uno.pdf"), b"%PDF").expect("crear PDF");
+        fs::write(subcarpeta.join("dos.md"), b"# Dos").expect("crear Markdown");
+        let repositorio = abrir_base_datos(&directorio.join("prueba.db")).expect("abrir base");
+        let carpeta = repositorio.vincular_carpeta_sistema(documentos.to_str().expect("ruta UTF-8")).expect("vincular carpeta");
+        let iniciales = repositorio.sincronizar_carpeta_sistema(&carpeta.id).expect("sincronizar carpeta");
+        let primero = iniciales.first().expect("documento inicial");
+        let estado = EstadoLecturaDocumento { indice_fragmento: 5, pagina: 2, indice_unidad: 0, desplazamiento: 100.0, modo_visual_pdf: "texto".to_string(), componentes: EstadoPanelesLectura { biblioteca: true, inspector: true, controles: true } };
+        repositorio.guardar_progreso(&primero.id, 31.0, &estado).expect("guardar progreso");
+        fs::write(documentos.join("tres.epub"), b"EPUB").expect("crear EPUB");
+
+        let actualizados = repositorio.sincronizar_carpeta_sistema(&carpeta.id).expect("resincronizar carpeta");
+        let ruta_esperada = documentos.canonicalize().expect("canonicalizar").to_string_lossy().to_string();
+
+        assert_eq!(carpeta.nombre, "Ciencias");
+        assert_eq!(carpeta.ruta.as_deref(), Some(ruta_esperada.as_str()));
+        assert_eq!(actualizados.len(), 3);
+        assert!(actualizados.iter().all(|documento| documento.carpeta_id.as_deref() == Some(carpeta.id.as_str())));
+        assert_eq!(actualizados.iter().find(|documento| documento.id == primero.id).expect("documento conservado").progreso, 31.0);
+        fs::remove_dir_all(directorio).expect("limpiar temporal");
+    }
+
+    #[test]
+    fn rechaza_sincronizar_carpeta_virtual_como_ruta_del_sistema() {
+        let directorio = std::env::temp_dir().join(format!("carlector-carpeta-virtual-{}", std::process::id()));
+        fs::create_dir_all(&directorio).expect("crear temporal");
+        let repositorio = abrir_base_datos(&directorio.join("prueba.db")).expect("abrir base");
+        let carpeta = repositorio.crear_carpeta("Virtual").expect("crear carpeta virtual");
+
+        assert!(repositorio.sincronizar_carpeta_sistema(&carpeta.id).is_err());
         fs::remove_dir_all(directorio).expect("limpiar temporal");
     }
 }

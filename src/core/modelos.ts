@@ -46,6 +46,7 @@ export interface CarpetaBiblioteca {
   id: string;
   nombre: string;
   orden: number;
+  ruta?: string | null;
 }
 
 export interface EntradaIndice {
