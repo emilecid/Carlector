@@ -80,7 +80,7 @@ export const persistencia = {
     localStorage.setItem(CLAVE_PESTANAS, JSON.stringify(sesion));
   },
   division(): SesionDivision {
-    return leerJson<SesionDivision>(CLAVE_DIVISION, { documentos: [], proporciones: [100] });
+    return leerJson<SesionDivision>(CLAVE_DIVISION, { documentos: [], proporciones: [100], orientacion: "horizontal" });
   },
   guardarDivision(sesion: SesionDivision): void {
     localStorage.setItem(CLAVE_DIVISION, JSON.stringify(sesion));

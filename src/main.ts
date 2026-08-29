@@ -10,7 +10,7 @@ import type { CarpetaBiblioteca, DocumentoBiblioteca, EstadoLecturaDocumento, Fr
 import { debe_guardar_progreso, fragmento_esta_destacado, resolver_destino_indice } from "./core/herramientas_lectura.ts";
 import { resolver_indice_fragmento } from "./core/navegacion_lector.ts";
 import { calcular_posicion_superpuesta, crear_ejecutor_diferido } from "./core/interfaz.ts";
-import { abrir_pestana, ajustar_proporciones_paneles, cerrar_pestana, normalizar_documentos_divididos, normalizar_sesion_pestanas, proporciones_uniformes, type SesionDivision, type SesionPestanas } from "./core/pestanas.ts";
+import { abrir_pestana, acoplar_documento, ajustar_proporciones_paneles, cerrar_pestana, normalizar_documentos_divididos, normalizar_sesion_division, normalizar_sesion_pestanas, proporciones_uniformes, type SesionDivision, type SesionPestanas, type ZonaAcoplamiento } from "./core/pestanas.ts";
 import { resolver_control_paquete_voz } from "./core/interfaz_voz.ts";
 import { crear_informe_error } from "./core/informador_errores.ts";
 import { crear_exportacion_libreta, crear_html_exportacion_libreta } from "./core/libreta.ts";
@@ -52,6 +52,7 @@ let fragmentos_guardados: FragmentoGuardado[] = persistencia.fragmentos();
 let notas_documento: NotaDocumento[] = persistencia.notas();
 let sesion_pestanas: SesionPestanas = persistencia.pestanas();
 let sesion_division: SesionDivision = persistencia.division();
+let id_pestana_arrastrada: string | null = null;
 let filtro_biblioteca: FiltroBiblioteca = { tipo: "raiz" };
 let consulta_biblioteca = "";
 let pestana_izquierda: "biblioteca" | "indice" = "biblioteca";
@@ -248,20 +249,26 @@ function renderizar_pestanas_documentos(): void {
     ? document.activeElement.hasAttribute("data-dividir-pestana") ? "dividir" : document.activeElement.hasAttribute("data-cerrar-pestana") ? "cerrar" : "pestana"
     : undefined;
   sesion_pestanas = normalizar_sesion_pestanas(sesion_pestanas, new Set(documentos.map(({ id }) => id)));
-  sesion_division.documentos = normalizar_documentos_divididos(sesion_division.documentos, sesion_pestanas.activa, new Set(sesion_pestanas.abiertas));
+  sesion_division = normalizar_sesion_division(sesion_division, sesion_pestanas.activa, new Set(sesion_pestanas.abiertas));
   persistencia.guardarPestanas(sesion_pestanas);
   barra.innerHTML = sesion_pestanas.abiertas.map((id) => {
     const documento = documentos.find((actual) => actual.id === id);
     if (!documento) return "";
     const activa = vista_actual === "lector" && sesion_pestanas.activa === id;
     const dividida = sesion_division.documentos.includes(id);
-    return `<span class="pestana-documento"><button type="button" role="tab" aria-selected="${activa}" tabindex="${activa ? "0" : "-1"}" data-pestana-documento="${escapar_html(id)}" title="${escapar_html(documento.titulo)}">${escapar_html(documento.titulo)}</button><button type="button" class="dividir-pestana ${dividida ? "activa" : ""}" data-dividir-pestana="${escapar_html(id)}" aria-pressed="${dividida}" aria-label="${dividida ? "Quitar de pantalla dividida" : "Mostrar junto al documento activo"}: ${escapar_html(documento.titulo)}" ${activa ? "disabled" : ""}>↔</button><button type="button" class="cerrar-pestana" data-cerrar-pestana="${escapar_html(id)}" aria-label="Cerrar ${escapar_html(documento.titulo)}">×</button></span>`;
+    return `<span class="pestana-documento"><button type="button" role="tab" draggable="true" aria-selected="${activa}" aria-keyshortcuts="Meta+Shift+ArrowLeft Meta+Shift+ArrowRight Meta+Shift+ArrowUp Meta+Shift+ArrowDown" tabindex="${activa ? "0" : "-1"}" data-pestana-documento="${escapar_html(id)}" title="${escapar_html(documento.titulo)} · arrastra para crear mosaico">${escapar_html(documento.titulo)}</button><button type="button" class="dividir-pestana ${dividida ? "activa" : ""}" data-dividir-pestana="${escapar_html(id)}" aria-pressed="${dividida}" aria-label="${dividida ? "Quitar de pantalla dividida" : "Mostrar junto al documento activo"}: ${escapar_html(documento.titulo)}" ${activa ? "disabled" : ""}>↔</button><button type="button" class="cerrar-pestana" data-cerrar-pestana="${escapar_html(id)}" aria-label="Cerrar ${escapar_html(documento.titulo)}">×</button></span>`;
   }).join("");
   if (foco && accion_foco) {
     const atributo = accion_foco === "dividir" ? "data-dividir-pestana" : accion_foco === "cerrar" ? "data-cerrar-pestana" : "data-pestana-documento";
     barra.querySelector<HTMLElement>(`[${atributo}="${CSS.escape(foco)}"]`)?.focus();
   }
   document.querySelector<HTMLElement>("[data-vista='biblioteca']")?.classList.toggle("activa", vista_actual === "biblioteca");
+  const boton_orientacion = document.querySelector<HTMLButtonElement>("#alternar-orientacion-mosaico");
+  if (boton_orientacion) {
+    boton_orientacion.hidden = sesion_division.documentos.length === 0;
+    boton_orientacion.textContent = sesion_division.orientacion === "horizontal" ? "▥" : "▦";
+    boton_orientacion.setAttribute("aria-label", sesion_division.orientacion === "horizontal" ? "Cambiar mosaico a filas" : "Cambiar mosaico a columnas");
+  }
 }
 
 async function cerrar_pestana_documento(id: string): Promise<void> {
@@ -282,6 +289,67 @@ function alternar_pestana_dividida(id: string): void {
     ? sesion_division.documentos.filter((actual) => actual !== id)
     : [...sesion_division.documentos, id].slice(-2);
   sesion_division.proporciones = proporciones_uniformes(sesion_division.documentos.length + 1);
+  sesion_division.orientacion = "horizontal";
+  persistencia.guardarDivision(sesion_division);
+  renderizar_pestanas_documentos();
+  if (vista_actual === "lector") void renderizar_lector();
+}
+
+function ocultar_zonas_acoplamiento(): void {
+  id_pestana_arrastrada = null;
+  const zonas = document.querySelector<HTMLElement>("#zonas-acoplamiento");
+  if (!zonas) return;
+  zonas.hidden = true;
+  zonas.classList.remove("ajuste-manual");
+  zonas.querySelectorAll("[data-zona-acoplamiento]").forEach((zona) => zona.classList.remove("activa"));
+}
+
+function mostrar_zonas_acoplamiento(id_documento: string): void {
+  if (!sesion_pestanas.activa || id_documento === sesion_pestanas.activa) return;
+  id_pestana_arrastrada = id_documento;
+  const zonas = document.querySelector<HTMLElement>("#zonas-acoplamiento");
+  if (!zonas) return;
+  zonas.hidden = false;
+  const estado = zonas.querySelector<HTMLElement>("#estado-acoplamiento");
+  if (estado) estado.textContent = "Suelta en una zona. Mantén Command para fijar el tamaño desde la posición del puntero.";
+}
+
+function proporcion_acoplamiento(evento: DragEvent, zona: ZonaAcoplamiento): number | undefined {
+  if (!evento.metaKey) return undefined;
+  const vista = document.querySelector<HTMLElement>("#vista-principal");
+  if (!vista) return undefined;
+  const limites = vista.getBoundingClientRect();
+  const horizontal = zona === "izquierda" || zona === "derecha";
+  const extension = Math.max(1, horizontal ? limites.width : limites.height);
+  const distancia = zona === "izquierda"
+    ? evento.clientX - limites.left
+    : zona === "derecha"
+      ? limites.right - evento.clientX
+      : zona === "arriba"
+        ? evento.clientY - limites.top
+        : limites.bottom - evento.clientY;
+  return Math.min(70, Math.max(15, Math.round((distancia / extension) * 200)));
+}
+
+function aplicar_acoplamiento(id_documento: string, zona: ZonaAcoplamiento, proporcion?: number): void {
+  const resultado = acoplar_documento(sesion_division, id_documento, sesion_pestanas.activa, zona, new Set(sesion_pestanas.abiertas), proporcion);
+  sesion_division = resultado.division;
+  persistencia.guardarDivision(sesion_division);
+  ocultar_zonas_acoplamiento();
+  if (resultado.activo && resultado.activo !== sesion_pestanas.activa) void abrir_documento(resultado.activo);
+  else {
+    renderizar_pestanas_documentos();
+    if (vista_actual === "lector") void renderizar_lector();
+  }
+}
+
+function alternar_orientacion_mosaico(): void {
+  establecer_orientacion_mosaico(sesion_division.orientacion === "horizontal" ? "vertical" : "horizontal");
+}
+
+function establecer_orientacion_mosaico(orientacion: SesionDivision["orientacion"]): void {
+  if (!sesion_division.documentos.length || sesion_division.orientacion === orientacion) return;
+  sesion_division = { ...sesion_division, orientacion };
   persistencia.guardarDivision(sesion_division);
   renderizar_pestanas_documentos();
   if (vista_actual === "lector") void renderizar_lector();
@@ -1103,21 +1171,21 @@ function enlazar_paneles_documentos(): void {
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-divisor-panel]").forEach((divisor) => {
     const indice = Number(divisor.dataset.divisorPanel);
-    const movil = es_interfaz_movil();
-    divisor.setAttribute("aria-orientation", movil ? "horizontal" : "vertical");
+    const disposicion_vertical = es_interfaz_movil() || sesion_division.orientacion === "vertical";
+    divisor.setAttribute("aria-orientation", disposicion_vertical ? "horizontal" : "vertical");
     divisor.addEventListener("keydown", (evento) => {
-      const disminuir = movil ? evento.key === "ArrowUp" : evento.key === "ArrowLeft";
-      const aumentar = movil ? evento.key === "ArrowDown" : evento.key === "ArrowRight";
+      const disminuir = disposicion_vertical ? evento.key === "ArrowUp" : evento.key === "ArrowLeft";
+      const aumentar = disposicion_vertical ? evento.key === "ArrowDown" : evento.key === "ArrowRight";
       if (disminuir) { evento.preventDefault(); cambiar_proporcion_paneles(indice, -2); }
       if (aumentar) { evento.preventDefault(); cambiar_proporcion_paneles(indice, 2); }
     });
     divisor.addEventListener("pointerdown", (evento) => {
       evento.preventDefault(); divisor.setPointerCapture(evento.pointerId);
-      let posicion_anterior = movil ? evento.clientY : evento.clientX;
+      let posicion_anterior = disposicion_vertical ? evento.clientY : evento.clientX;
       const contenedor = document.querySelector<HTMLElement>("#paneles-documentos");
       const mover = (movimiento: PointerEvent): void => {
-        const extension = Math.max(1, movil ? contenedor?.clientHeight ?? 1 : contenedor?.clientWidth ?? 1);
-        const posicion = movil ? movimiento.clientY : movimiento.clientX;
+        const extension = Math.max(1, disposicion_vertical ? contenedor?.clientHeight ?? 1 : contenedor?.clientWidth ?? 1);
+        const posicion = disposicion_vertical ? movimiento.clientY : movimiento.clientX;
         cambiar_proporcion_paneles(indice, ((posicion - posicion_anterior) / extension) * 100);
         posicion_anterior = posicion;
       };
@@ -1142,15 +1210,15 @@ async function renderizar_lector(): Promise<void> {
   const pdf_doble = modo_visual_pdf === "doble";
   const rsvp_visible = perfil_actual.modo_lectura === "rsvp" && !pdf_original;
   const lector_activo = `<main class="lector ${rsvp_visible ? "lector-rsvp" : ""} ${rsvp_visible && documento_actual.formato === "PDF" ? "lector-pdf-rsvp" : ""} ${pdf_original ? "lector-pdf-original" : ""} ${pdf_doble ? "lector-pdf-doble" : ""}">${crear_cabecera_lector(pdf_original)}${pdf_doble ? crear_vista_pdf_doble() : pdf_original ? crear_visor_pdf_original() : `${documento_procesado?.portada && !rsvp_visible ? `<figure class="portada-documento"><img src="${escapar_html(documento_procesado.portada)}" alt="Portada de ${escapar_html(documento_actual.titulo)}"></figure>` : ""}<article class="lector-articulo"></article><section class="visor-rsvp" ${rsvp_visible ? "" : "hidden"}><div id="texto-rsvp" role="status" aria-live="polite" aria-atomic="true"></div></section>`}</main><section id="preparacion-documento" class="preparacion-documento" aria-live="polite"><div><strong>Preparando documento completo</strong><span data-etapa-preparacion>Organizando contenido…</span><progress max="100" value="5"></progress><small data-porcentaje-preparacion>5%</small></div></section>`;
-  const secundarios = normalizar_documentos_divididos(sesion_division.documentos, documento_actual.id, new Set(sesion_pestanas.abiertas));
-  sesion_division.documentos = secundarios;
+  sesion_division = normalizar_sesion_division(sesion_division, documento_actual.id, new Set(sesion_pestanas.abiertas));
+  const secundarios = sesion_division.documentos;
   const cantidad_paneles = secundarios.length + 1;
   if (sesion_division.proporciones.length !== cantidad_paneles) sesion_division.proporciones = proporciones_uniformes(cantidad_paneles);
   persistencia.guardarDivision(sesion_division);
   principal.classList.toggle("vista-dividida", secundarios.length > 0);
   if (secundarios.length) {
     const paneles = [`<section id="panel-documento-activo" class="panel-documento-lectura" data-panel-documento="${escapar_html(documento_actual.id)}" style="--proporcion-panel:${sesion_division.proporciones[0]}">${lector_activo}</section>`, ...secundarios.map((id, indice) => crear_panel_documento_secundario(id, sesion_division.proporciones[indice + 1] ?? 0))];
-    principal.innerHTML = `<section id="paneles-documentos" class="paneles-documentos">${paneles.map((panel, indice) => `${panel}${indice < paneles.length - 1 ? `<button type="button" class="divisor-panel-documento" data-divisor-panel="${indice}" role="separator" aria-orientation="${es_interfaz_movil() ? "horizontal" : "vertical"}" aria-label="Redimensionar documentos" aria-valuemin="15" aria-valuemax="85" aria-valuenow="${Math.round(sesion_division.proporciones[indice] ?? 0)}"></button>` : ""}`).join("")}</section>`;
+    principal.innerHTML = `<section id="paneles-documentos" class="paneles-documentos" data-orientacion="${sesion_division.orientacion}">${paneles.map((panel, indice) => `${panel}${indice < paneles.length - 1 ? `<button type="button" class="divisor-panel-documento" data-divisor-panel="${indice}" role="separator" aria-orientation="${es_interfaz_movil() || sesion_division.orientacion === "vertical" ? "horizontal" : "vertical"}" aria-label="Redimensionar documentos" aria-valuemin="15" aria-valuemax="85" aria-valuenow="${Math.round(sesion_division.proporciones[indice] ?? 0)}"></button>` : ""}`).join("")}</section>`;
   } else principal.innerHTML = lector_activo;
   enlazar_paneles_documentos();
   enlazar_eventos_visor_pdf();
@@ -2106,6 +2174,7 @@ async function inicializar_sincronizacion_perfil(): Promise<void> {
   await Promise.all([
     listen<PerfilLecturaParcial>("perfil-actualizado", ({ payload }) => actualizar_perfil(payload, false)),
     listen<boolean>("informes-error-actualizados", ({ payload }) => actualizar_informes_error(payload, false)),
+    listen<"horizontal" | "vertical">("mosaico-orientacion", ({ payload }) => establecer_orientacion_mosaico(payload)),
     listen("asociaciones-archivo-actualizadas", () => void actualizar_estado_asociaciones_archivo()),
   ]);
 }
@@ -2431,7 +2500,7 @@ function montar_aplicacion(): void {
   if (ES_VENTANA_PREFERENCIAS) pestana_derecha = "perfil";
   aplicacion.innerHTML = `<div class="aplicacion"><header class="barra-superior">
     <nav class="pestanas" aria-label="Documentos abiertos"><button class="pestana activa" data-vista="biblioteca">Biblioteca</button><span id="pestanas-documentos" class="pestanas-documentos" role="tablist"></span></nav>
-    <div class="acciones-superiores"><button id="modo-enfoque" class="boton">Modo lectura</button><input id="archivo" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" multiple><input id="carpeta" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" webkitdirectory multiple></div><div class="busqueda-global" role="search" aria-label="Buscar en la vista actual" hidden><input id="busqueda-global" type="search" placeholder="Buscar" aria-label="Texto que buscar"><span id="estado-busqueda-global" aria-live="polite"></span><button id="busqueda-anterior" aria-label="Resultado anterior">↑</button><button id="busqueda-siguiente" aria-label="Resultado siguiente">↓</button><button id="cerrar-busqueda-global" aria-label="Cerrar búsqueda">×</button></div></header>
+    <div class="acciones-superiores"><button id="alternar-orientacion-mosaico" class="boton boton-mosaico" type="button" aria-label="Cambiar orientación del mosaico" title="Cambiar orientación del mosaico" hidden>▥</button><button id="modo-enfoque" class="boton">Modo lectura</button><input id="archivo" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" multiple><input id="carpeta" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" webkitdirectory multiple></div><div class="busqueda-global" role="search" aria-label="Buscar en la vista actual" hidden><input id="busqueda-global" type="search" placeholder="Buscar" aria-label="Texto que buscar"><span id="estado-busqueda-global" aria-live="polite"></span><button id="busqueda-anterior" aria-label="Resultado anterior">↑</button><button id="busqueda-siguiente" aria-label="Resultado siguiente">↓</button><button id="cerrar-busqueda-global" aria-label="Cerrar búsqueda">×</button></div></header>
     <div class="contenido"><aside id="panel-biblioteca" class="panel"><button id="alternar-panel-biblioteca" class="flecha-panel flecha-panel-izquierda" aria-label="Ocultar biblioteca">‹</button><div class="panel-contenido"><div class="pestanas-panel"><button class="activo" data-pestana-izquierda="biblioteca">Biblioteca</button><button data-pestana-izquierda="indice">Índice</button></div><div id="contenido-biblioteca"><section class="panel-seccion"><div class="encabezado-panel"><h2 class="panel-titulo">Organización</h2><button id="abrir-menu-agregar" class="agregar-biblioteca" aria-label="Añadir a biblioteca" title="Añadir a biblioteca">+</button></div><nav id="navegacion-biblioteca" class="navegacion"></nav></section>
     <section class="panel-seccion"><h2 class="panel-titulo">Carpetas</h2><nav id="carpetas-biblioteca" class="navegacion"></nav></section></div><section id="contenido-indice" class="panel-seccion" hidden></section>
     </div></aside><section id="vista-principal" class="vista-principal"></section><aside id="panel-inspector" class="panel panel-derecho" aria-label="Libreta y configuración"><button id="alternar-panel-inspector" class="flecha-panel flecha-panel-derecha" aria-label="Ocultar panel lateral">›</button><div class="panel-contenido"><header class="cabecera-preferencias"><h1 id="titulo-preferencias" tabindex="-1">Configuración</h1><p>Preferencias locales de Carlector</p></header><div class="pestanas-panel"><button class="activo" data-pestana-derecha="fragmentos">Libreta</button><button data-pestana-derecha="perfil">Configuración</button></div><div id="contenido-perfil" hidden><details id="configuracion-interfaz" class="panel-seccion grupo-configuracion" open><summary>Interfaz</summary><div class="contenido-grupo-configuracion">
@@ -2463,6 +2532,7 @@ function montar_aplicacion(): void {
     <details class="menu-omisiones-voz"><summary>Contenido en voz</summary><div class="contenido-menu-omisiones"><div class="campo"><label for="matematica">Matemática en voz</label><select id="matematica"><option value="leer">Leer</option><option value="omitir">Omitir</option><option value="indicar">Decir «ecuación»</option></select></div><fieldset class="lista-omisiones-voz"><legend>Omitir al leer</legend><label><input id="saltar-citas" type="checkbox"> Citas bibliográficas</label><label><input type="checkbox" checked disabled> Símbolos ilegibles</label></fieldset></div></details>
     <div class="campo campo-linea"><label for="auto-scroll">Auto-scroll</label><input id="auto-scroll" class="interruptor" type="checkbox"></div></div></details>
     <details id="configuracion-voz" class="panel-seccion grupo-configuracion" open><summary><span>Voz</span><button id="abrir-repositorios-voz" class="boton-biblioteca-temas" aria-label="Administrar repositorios de voz" title="Repositorios de voz">⬡</button></summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea campo-voz-habilitada"><label for="voz-habilitada">Voz habilitada</label><input id="voz-habilitada" class="interruptor" type="checkbox"></div><div class="campo"><label for="motor-voz">Motor</label><select id="motor-voz"><option value="sistema">TTS del sistema · experimental</option><option value="kokoro_onnx" ${kokoro_instalado ? "" : "disabled"}>Kokoro ONNX${kokoro_instalado ? " · verificado" : " · no instalado"}</option></select></div><div class="campo" data-solo-kokoro><label for="idioma-voz">Paquete de idioma</label><select id="idioma-voz"><option value="es">Español genérico</option><option value="en-us">Inglés · Estados Unidos</option><option value="en-gb">Inglés · Reino Unido</option></select></div><div class="campo" data-solo-kokoro><label for="voz-base">Voz compatible</label><select id="voz-base"></select></div><div class="control-velocidad-voz" data-velocidad-voz-individual><label for="velocidad">Velocidad de reproducción</label><div class="velocidad-linea"><button id="velocidad-menos" class="velocidad-ajuste" aria-label="Reducir velocidad en 0.1">−</button><input id="velocidad" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.velocidad}"><button id="velocidad-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad en 0.1">+</button><span id="valor-velocidad"></span></div><div class="velocidades-rapidas"><button data-velocidad="1">1×</button><button data-velocidad="1.5">1.5×</button><button data-velocidad="2">2×</button></div></div><p class="ayuda-campo" data-solo-kokoro>Idioma y voz se sincronizan automáticamente para evitar combinaciones incompatibles.</p></div></details><details id="configuracion-avanzada" class="panel-seccion grupo-configuracion"><summary>Avanzado</summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea"><label for="mostrar-informes-error">Mostrar informes de error</label><input id="mostrar-informes-error" class="interruptor" type="checkbox" ${informes_error_habilitados ? "checked" : ""}></div><fieldset class="atajos-configurables"><legend>Atajos de teclado</legend>${Object.entries(ETIQUETAS_ATAJOS).map(([accion, etiqueta]) => `<label for="atajo-${accion}">${etiqueta}</label><input id="atajo-${accion}" data-atajo="${accion}" value="${describir_atajo(perfil_actual.atajos[accion as AccionAtajo])}" readonly aria-describedby="ayuda-atajos estado-atajos">`).join("")}<p id="ayuda-atajos">Selecciona un campo y pulsa la combinación nueva. Escape cancela.</p><p id="estado-atajos" role="status"></p><button id="restaurar-atajos" class="boton" type="button">Restaurar atajos</button></fieldset></div></details></div><div id="ubicacion-libreta-panel"><section id="contenido-fragmentos" class="panel-seccion"></section></div></div></aside></div>
+    <section id="zonas-acoplamiento" class="zonas-acoplamiento" aria-label="Zonas de mosaico" hidden><p id="estado-acoplamiento" role="status" aria-live="polite"></p><button class="zona-acoplamiento zona-izquierda" type="button" data-zona-acoplamiento="izquierda">Izquierda</button><button class="zona-acoplamiento zona-derecha" type="button" data-zona-acoplamiento="derecha">Derecha</button><button class="zona-acoplamiento zona-arriba" type="button" data-zona-acoplamiento="arriba">Arriba</button><button class="zona-acoplamiento zona-abajo" type="button" data-zona-acoplamiento="abajo">Abajo</button></section>
     <div id="menu-agregar" class="menu-agregar" hidden><button id="anadir-archivo">Añadir archivo</button><button id="anadir-carpeta">Añadir carpeta del sistema</button><button id="crear-carpeta">Crear carpeta virtual</button></div><div id="menu-contextual" class="menu-agregar menu-contextual" hidden></div><section id="biblioteca-temas" class="modal-temas" hidden><div class="dialogo-temas"><header><div><h2>Biblioteca de temas</h2><p>Paletas locales para lectura e interfaz</p></div><button id="cerrar-biblioteca-temas" aria-label="Cerrar">×</button></header><div id="lista-biblioteca-temas" class="lista-biblioteca-temas"></div><footer><button id="guardar-tema-actual" class="boton primario">Guardar tema actual</button></footer></div></section><section id="repositorios-voz" class="modal-temas" hidden><div class="dialogo-temas dialogo-repositorios"><header><h2>Repositorios de voz</h2><button id="cerrar-repositorios-voz" aria-label="Cerrar">×</button></header><div id="lista-repositorios-voz" class="lista-repositorios-voz"></div><footer><button id="actualizar-estado-voz" class="boton">Comprobar estado</button></footer></div></section>
     <section id="libreta-flotante" class="libreta-flotante" aria-labelledby="titulo-libreta-flotante" hidden><header id="asa-libreta-flotante"><strong id="titulo-libreta-flotante">Libreta</strong><button id="cerrar-libreta-flotante" aria-label="Cerrar Libreta flotante">×</button></header><div id="contenido-libreta-flotante" class="contenido-libreta-flotante"></div></section><section id="informador-error" class="informador-error" role="alertdialog" aria-labelledby="error-contexto" aria-describedby="error-detalle" hidden><div><header><strong id="error-contexto">Error de Carlector</strong><button id="cerrar-informador-error" aria-label="Cerrar">×</button></header><p id="error-detalle"></p><small id="error-fecha"></small><footer><label><input id="no-mostrar-errores" type="checkbox"> No volver a mostrar</label><button id="aceptar-informador-error" class="boton primario">Cerrar</button></footer></div></section><section id="carga-importacion" class="carga-importacion" role="status" aria-live="polite" hidden><strong>Cargando biblioteca</strong><span id="carga-nombre"></span><progress id="carga-progreso" max="100"></progress><small id="carga-estado"></small></section><button id="abrir-libreta-flotante" type="button" aria-label="Abrir Libreta flotante" aria-expanded="false" title="Abrir Libreta flotante">↗</button><button id="salir-modo-enfoque" type="button" aria-label="Salir del modo lectura">×</button>
     <footer class="control-inferior"><div class="control-documento"><strong id="documento-actual"></strong></div><div class="reproductor"><button id="anterior" class="boton-icono" aria-label="Fragmento anterior">←</button><button id="reproducir" class="reproducir" aria-label="Reproducir" title="Reproducir o pausar · Space">▶</button><button id="siguiente" class="boton-icono" aria-label="Fragmento siguiente">→</button></div><div class="control-velocidad" data-velocidad-maestra><div class="velocidad-linea"><button id="ritmo-inferior-menos" class="velocidad-ajuste" aria-label="Reducir ritmo general en 0.1">−</button><input id="ritmo-general-inferior" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.ritmo_general}"><button id="ritmo-inferior-mas" class="velocidad-ajuste" aria-label="Aumentar ritmo general en 0.1">+</button><span data-valor-ritmo-general></span></div><div class="velocidades-rapidas"><button data-ritmo-general="1">1×</button><button data-ritmo-general="1.5">1.5×</button><button data-ritmo-general="2">2×</button></div></div><div class="control-velocidad" data-velocidad-visual-inferior><div class="velocidad-linea"><button id="palabras-inferior-menos" class="velocidad-ajuste" aria-label="Reducir palabras por minuto">−</button><input id="palabras-minuto-inferior" type="range" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto}"><button id="palabras-inferior-mas" class="velocidad-ajuste" aria-label="Aumentar palabras por minuto">+</button><span data-valor-palabras-minuto></span></div><div class="velocidades-rapidas"><button data-palabras-minuto="200">200</button><button data-palabras-minuto="300">300</button><button data-palabras-minuto="450">450</button></div></div></footer></div>`;
@@ -2488,6 +2558,14 @@ function montar_aplicacion(): void {
   });
   document.querySelector("#pestanas-documentos")?.addEventListener("keydown", (evento) => {
     const teclado = evento as KeyboardEvent;
+    const pestana = teclado.target instanceof Element ? teclado.target.closest<HTMLElement>("[data-pestana-documento]") : null;
+    const zonas_teclado: Partial<Record<string, ZonaAcoplamiento>> = { ArrowLeft: "izquierda", ArrowRight: "derecha", ArrowUp: "arriba", ArrowDown: "abajo" };
+    const zona_teclado = zonas_teclado[teclado.key];
+    if (pestana && zona_teclado && teclado.metaKey && teclado.shiftKey) {
+      teclado.preventDefault();
+      aplicar_acoplamiento(pestana.dataset.pestanaDocumento ?? "", zona_teclado);
+      return;
+    }
     if (teclado.key !== "ArrowLeft" && teclado.key !== "ArrowRight") return;
     const pestanas = [...document.querySelectorAll<HTMLButtonElement>("[data-pestana-documento]")];
     const actual = pestanas.indexOf(document.activeElement as HTMLButtonElement);
@@ -2495,6 +2573,38 @@ function montar_aplicacion(): void {
     const siguiente = pestanas[(actual + (teclado.key === "ArrowRight" ? 1 : -1) + pestanas.length) % pestanas.length];
     if (siguiente) { teclado.preventDefault(); siguiente.focus(); void abrir_documento(siguiente.dataset.pestanaDocumento ?? ""); }
   });
+  document.querySelector("#pestanas-documentos")?.addEventListener("dragstart", (evento) => {
+    const arrastre = evento as DragEvent;
+    const pestana = arrastre.target instanceof Element ? arrastre.target.closest<HTMLElement>("[data-pestana-documento]") : null;
+    const id = pestana?.dataset.pestanaDocumento;
+    if (!id || id === sesion_pestanas.activa) { arrastre.preventDefault(); return; }
+    arrastre.dataTransfer?.setData("text/carlector-pestana", id);
+    if (arrastre.dataTransfer) arrastre.dataTransfer.effectAllowed = "move";
+    mostrar_zonas_acoplamiento(id);
+  });
+  document.querySelector("#pestanas-documentos")?.addEventListener("dragend", ocultar_zonas_acoplamiento);
+  document.querySelector("#zonas-acoplamiento")?.addEventListener("dragover", (evento) => {
+    const arrastre = evento as DragEvent;
+    const zona = arrastre.target instanceof Element ? arrastre.target.closest<HTMLElement>("[data-zona-acoplamiento]") : null;
+    if (!zona || !id_pestana_arrastrada) return;
+    arrastre.preventDefault();
+    if (arrastre.dataTransfer) arrastre.dataTransfer.dropEffect = "move";
+    document.querySelectorAll("[data-zona-acoplamiento]").forEach((elemento) => elemento.classList.toggle("activa", elemento === zona));
+    document.querySelector<HTMLElement>("#zonas-acoplamiento")?.classList.toggle("ajuste-manual", arrastre.metaKey);
+  });
+  document.querySelector("#zonas-acoplamiento")?.addEventListener("drop", (evento) => {
+    const arrastre = evento as DragEvent;
+    const zona = arrastre.target instanceof Element ? arrastre.target.closest<HTMLElement>("[data-zona-acoplamiento]")?.dataset.zonaAcoplamiento as ZonaAcoplamiento | undefined : undefined;
+    const id = arrastre.dataTransfer?.getData("text/carlector-pestana") || id_pestana_arrastrada;
+    if (!zona || !id) return;
+    arrastre.preventDefault();
+    aplicar_acoplamiento(id, zona, proporcion_acoplamiento(arrastre, zona));
+  });
+  document.querySelectorAll<HTMLElement>("[data-zona-acoplamiento]").forEach((boton) => boton.addEventListener("click", () => {
+    const zona = boton.dataset.zonaAcoplamiento as ZonaAcoplamiento | undefined;
+    if (zona && id_pestana_arrastrada) aplicar_acoplamiento(id_pestana_arrastrada, zona);
+  }));
+  document.querySelector("#alternar-orientacion-mosaico")?.addEventListener("click", alternar_orientacion_mosaico);
   document.querySelector<HTMLElement>("#vista-principal")?.addEventListener("scroll", () => guardar_posicion_actual(), { passive: true });
   document.querySelector<HTMLElement>("#vista-principal")?.addEventListener("wheel", suspender_autoscroll_manual, { passive: true });
   document.querySelector<HTMLElement>("#vista-principal")?.addEventListener("touchmove", suspender_autoscroll_manual, { passive: true });
