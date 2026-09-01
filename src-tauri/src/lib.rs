@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use biblioteca::{abrir_base_datos, descubrir_documentos_directorio, Carpeta, Documento, ErrorBiblioteca, EstadoLecturaDocumento, FragmentoGuardado, NotaDocumento, RepositorioBiblioteca};
 use kokoro::{EstadoKokoro, MotorKokoro};
 use markdown::DocumentoMarkdown;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 use tauri::Emitter;
 use tauri::{Manager, State};
 
@@ -36,6 +36,33 @@ struct EstadoArchivosAbiertos {
 }
 
 struct ArchivosAbiertos(Mutex<EstadoArchivosAbiertos>);
+
+fn registrar_archivos_abiertos(estado: &mut EstadoArchivosAbiertos, rutas: Vec<String>) -> Option<Vec<String>> {
+    if estado.receptor_listo {
+        Some(rutas)
+    } else {
+        estado.pendientes.extend(rutas);
+        None
+    }
+}
+
+#[cfg(test)]
+mod pruebas_apertura_archivos {
+    use super::*;
+
+    #[test]
+    fn encola_en_arranque_frio_y_emite_solo_con_receptor_listo() {
+        let mut estado = EstadoArchivosAbiertos::default();
+        let inicial = vec!["/tmp/inicial.pdf".to_string()];
+        assert_eq!(registrar_archivos_abiertos(&mut estado, inicial.clone()), None);
+        assert_eq!(estado.pendientes, inicial);
+
+        estado.receptor_listo = true;
+        let nueva = vec!["/tmp/nueva.epub".to_string()];
+        assert_eq!(registrar_archivos_abiertos(&mut estado, nueva.clone()), Some(nueva));
+        assert_eq!(estado.pendientes, inicial);
+    }
+}
 
 #[tauri::command]
 async fn estado_kokoro(estado: State<'_, EstadoAplicacion>) -> Result<EstadoKokoro, String> {
@@ -248,14 +275,17 @@ pub fn ejecutar() {
         .build(tauri::generate_context!())
         .expect("No fue posible construir Carlector");
     aplicacion.run(|_manejador, _evento| {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         if let tauri::RunEvent::Opened { urls } = _evento {
             let rutas = urls.iter().filter_map(|url| url.to_file_path().ok()).map(|ruta| ruta.to_string_lossy().to_string()).collect::<Vec<_>>();
             if rutas.is_empty() { return; }
-            if let Ok(mut archivos) = _manejador.state::<ArchivosAbiertos>().0.lock() {
-                if !archivos.receptor_listo { archivos.pendientes.extend(rutas.clone()); }
+            let rutas_para_emitir = match _manejador.state::<ArchivosAbiertos>().0.lock() {
+                Ok(mut archivos) => registrar_archivos_abiertos(&mut archivos, rutas),
+                Err(_) => Some(rutas),
+            };
+            if let Some(rutas) = rutas_para_emitir {
+                let _ = _manejador.emit("abrir-documentos", rutas);
             }
-            let _ = _manejador.emit("abrir-documentos", rutas);
         }
     });
 }
