@@ -8,6 +8,7 @@ use tauri::{
 
 #[cfg(target_os = "macos")]
 const ID_MENU_PREFERENCIAS: &str = "abrir-preferencias";
+#[cfg(target_os = "macos")]
 pub(super) const ETIQUETA_VENTANA_PREFERENCIAS: &str = "preferencias";
 
 #[cfg(target_os = "macos")]
