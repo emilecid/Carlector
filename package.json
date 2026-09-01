@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "tauri": "PATH=\"/opt/homebrew/opt/rustup/bin:$PATH\" tauri"
+    "tauri": "PATH=\"/opt/homebrew/opt/rustup/bin:$PATH\" tauri",
+    "ios:init": "pnpm tauri ios init --ci",
+    "ios:dev": "pnpm tauri ios dev",
+    "ios:build": "pnpm tauri ios build --target aarch64"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",

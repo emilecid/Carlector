@@ -106,15 +106,18 @@ fn sincronizar_biblioteca(estado: State<'_, EstadoAplicacion>) -> Result<(), Str
     estado.biblioteca.lock().map_err(|_| "No fue posible bloquear la biblioteca".to_string())?.sincronizar_biblioteca().map_err(|error| error.to_string())
 }
 
+#[cfg(target_os = "macos")]
 fn abrir_directorio_en_finder(ruta: &Path) -> Result<(), String> {
     if !ruta.is_dir() {
         return Err(format!("La carpeta no existe: {}", ruta.display()));
     }
-    #[cfg(target_os = "macos")]
     let estado_apertura = std::process::Command::new("/usr/bin/open").arg(ruta).status();
-    #[cfg(not(target_os = "macos"))]
-    return Err("Abrir Finder solo está disponible en macOS".to_string());
     estado_apertura.map_err(|error| format!("No fue posible abrir la carpeta: {error}"))?.success().then_some(()).ok_or_else(|| "Finder no pudo abrir la carpeta".to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn abrir_directorio_en_finder(_ruta: &Path) -> Result<(), String> {
+    Err("Abrir Finder solo está disponible en macOS".to_string())
 }
 
 #[tauri::command]
