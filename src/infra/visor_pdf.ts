@@ -8,6 +8,9 @@ GlobalWorkerOptions.workerSrc = url_trabajador_pdf;
 interface ElementoTextoPosicionadoPdf {
   str: string;
   transform: number[];
+  width: number;
+  height: number;
+  hasEOL: boolean;
 }
 
 function es_texto_posicionado_pdf(elemento: unknown): elemento is ElementoTextoPosicionadoPdf {
@@ -208,7 +211,7 @@ export class VisorPdf {
     canvas.style.width = `${vista.width}px`;
     canvas.style.height = `${vista.height}px`;
     const contenido_texto = await pagina.getTextContent({ includeMarkedContent: true, disableNormalization: true });
-    const elementos_texto = contenido_texto.items.flatMap((elemento): ElementoTextoPosicionadoPdf[] => es_texto_posicionado_pdf(elemento) ? [{ str: elemento.str, transform: [...elemento.transform] }] : []);
+    const elementos_texto = contenido_texto.items.flatMap((elemento): ElementoTextoPosicionadoPdf[] => es_texto_posicionado_pdf(elemento) ? [{ str: elemento.str, transform: [...elemento.transform], width: elemento.width, height: elemento.height, hasEOL: elemento.hasEOL }] : []);
     const capa = document.createElement("div");
     capa.className = "textLayer capa-texto-pdf";
     capa.setAttribute("aria-label", `Texto seleccionable de la página ${numero}`);
@@ -222,7 +225,7 @@ export class VisorPdf {
       await Promise.all([tarea.promise, capa_texto.render()]);
       if (generacion === this.generacion_renderizado) {
         const indices_visuales = elementos_texto.length === capa_texto.textDivs.length
-          ? ordenar_indices_texto_pdf(elementos_texto.map(({ transform }) => ({ x: transform[4] ?? 0, y: transform[5] ?? 0 })))
+          ? ordenar_indices_texto_pdf(elementos_texto.map(({ str, transform, width, height, hasEOL }) => ({ x: transform[4] ?? 0, y: transform[5] ?? 0, ancho: width, alto: height, fin_linea: hasEOL, vacio: !str.trim() })), 3, base.width)
           : capa_texto.textDivs.map((_, indice) => indice);
         const elementos_visuales = indices_visuales.map((indice) => capa_texto.textDivs[indice]).filter((elemento): elemento is HTMLSpanElement => Boolean(elemento));
         const rangos = rangos_textos_pdf(elementos_visuales.map((elemento) => elemento.textContent ?? ""));

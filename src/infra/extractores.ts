@@ -3,47 +3,68 @@ import ePub from "epubjs";
 import { GlobalWorkerOptions, getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import url_trabajador_pdf from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
 
-import { crear_bloque_pdf, type BloqueDocumento, type DocumentoProcesado } from "../core/documentos.ts";
+import { crear_bloque_pdf, VERSION_CACHE_DOCUMENTO, type BloqueDocumento, type DocumentoProcesado, type GeometriaLineaPdf } from "../core/documentos.ts";
 import { detectar_lineas_marginales_repetidas, type LineaMarginalPdf } from "../core/limpieza_pdf.ts";
 import type { EntradaIndice } from "../core/modelos.ts";
+import { agrupar_indices_lineas_texto_pdf } from "../core/visor_pdf.ts";
 import { clasificar_estructura_epub } from "./semantica_epub.ts";
 
 GlobalWorkerOptions.workerSrc = url_trabajador_pdf;
-const VERSION_CACHE_DOCUMENTO = 6;
 
 interface ElementoTextoPdf {
   str: string;
   transform: number[];
   fontName: string;
   hasEOL: boolean;
-}
-
-interface LineaPdf {
-  posicion_y: number;
-  elementos: ElementoTextoPdf[];
+  width: number;
+  height: number;
 }
 
 export type NotificadorExtraccion = (completados: number, total: number, etapa: string) => void;
+
+function mediana_numeros(valores: number[]): number {
+  const ordenados = valores.filter((valor) => Number.isFinite(valor) && valor > 0).sort((a, b) => a - b);
+  const centro = Math.floor(ordenados.length / 2);
+  return ordenados.length % 2 === 0 ? ((ordenados[centro - 1] ?? 0) + (ordenados[centro] ?? 0)) / 2 : ordenados[centro] ?? 0;
+}
 
 function es_elemento_texto_pdf(valor: unknown): valor is ElementoTextoPdf {
   return typeof valor === "object" && valor !== null && "str" in valor && "transform" in valor;
 }
 
-function agrupar_lineas_pdf(elementos: ElementoTextoPdf[]): LineaPdf[] {
-  const lineas: LineaPdf[] = [];
-  const ordenados = [...elementos].sort((a, b) => (b.transform[5] ?? 0) - (a.transform[5] ?? 0));
-  for (const elemento of ordenados) {
-    const posicion_y = elemento.transform[5] ?? 0;
-    const linea = lineas.at(-1);
-    if (linea && Math.abs(linea.posicion_y - posicion_y) <= 3) linea.elementos.push(elemento);
-    else lineas.push({ posicion_y, elementos: [elemento] });
-  }
-  return lineas
-    .map((linea) => ({ ...linea, elementos: linea.elementos.sort((a, b) => (a.transform[4] ?? 0) - (b.transform[4] ?? 0)) }));
-}
-
 function ceder_control_interfaz(): Promise<void> {
   return new Promise((resolver) => setTimeout(resolver, 0));
+}
+
+function decodificar_entidades_texto(texto: string): string {
+  const area = document.createElement("textarea");
+  area.innerHTML = texto.replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  return area.value;
+}
+
+function unir_elementos_texto_pdf(elementos: ElementoTextoPdf[]): string {
+  let texto = "";
+  let fin_previo: number | null = null;
+  let alto_previo = 0;
+  for (const elemento of elementos) {
+    const inicio = elemento.transform[4] ?? 0;
+    const segmento = elemento.str;
+    if (!segmento.trim()) {
+      if (texto && !/\s$/u.test(texto)) texto += " ";
+    } else {
+      const hueco = fin_previo === null ? 0 : inicio - fin_previo;
+      const alto_referencia = Math.min(alto_previo || elemento.height, elemento.height || alto_previo);
+      const requiere_espacio = fin_previo !== null
+        && hueco > Math.max(.75, alto_referencia * .1)
+        && !/\s$/u.test(texto)
+        && !/^\s|^[,.;:!?…\)\]\}»”’']/u.test(segmento);
+      if (requiere_espacio) texto += " ";
+      texto += segmento;
+    }
+    fin_previo = Math.max(fin_previo ?? Number.NEGATIVE_INFINITY, inicio + elemento.width);
+    if (elemento.height > 0) alto_previo = elemento.height;
+  }
+  return texto.replace(/\s+/gu, " ").trim();
 }
 
 export async function extraer_pdf(datos: ArrayBuffer, nombre_archivo: string, notificar?: NotificadorExtraccion): Promise<DocumentoProcesado> {
@@ -51,28 +72,44 @@ export async function extraer_pdf(datos: ArrayBuffer, nombre_archivo: string, no
   const pdf = await tarea.promise;
   const total_paginas = pdf.numPages;
   const bloques: BloqueDocumento[] = [];
-  const lineas_extraidas: Array<LineaMarginalPdf & { fuentes: string[] }> = [];
+  const lineas_extraidas: Array<LineaMarginalPdf & { fuentes: string[]; geometria_pdf: GeometriaLineaPdf }> = [];
   const metadata = await pdf.getMetadata().catch(() => null);
 
   for (let numero_pagina = 1; numero_pagina <= total_paginas; numero_pagina += 1) {
     const pagina = await pdf.getPage(numero_pagina);
     const contenido = await pagina.getTextContent({ disableNormalization: false });
-    const alto_pagina = pagina.getViewport({ scale: 1 }).height;
+    const dimensiones_pagina = pagina.getViewport({ scale: 1 });
+    const alto_pagina = dimensiones_pagina.height;
     const elementos = contenido.items.filter(es_elemento_texto_pdf) as ElementoTextoPdf[];
-    const lineas = agrupar_lineas_pdf(elementos);
-    for (const [indice, linea] of lineas.entries()) {
-      const texto = linea.elementos.map((elemento) => elemento.str).join(" ").replace(/\s+/g, " ").trim();
+    const lineas = agrupar_indices_lineas_texto_pdf(elementos.map((elemento) => ({
+      x: elemento.transform[4] ?? 0,
+      y: elemento.transform[5] ?? 0,
+      ancho: elemento.width,
+      alto: elemento.height,
+      fin_linea: elemento.hasEOL,
+      vacio: !elemento.str.trim(),
+    })), 3, dimensiones_pagina.width);
+    for (const [indice, indices_linea] of lineas.entries()) {
+      const elementos_linea = indices_linea.map((indice_elemento) => elementos[indice_elemento]).filter((elemento): elemento is ElementoTextoPdf => Boolean(elemento));
+      const texto = unir_elementos_texto_pdf(elementos_linea);
       if (!texto) continue;
-      const fuentes = linea.elementos.map((elemento) => elemento.fontName);
-      lineas_extraidas.push({ id: `pagina-${numero_pagina}-linea-${indice}`, pagina: numero_pagina, texto, posicion_y: linea.posicion_y, alto_pagina, fuentes });
+      const fuentes = elementos_linea.map((elemento) => elemento.fontName);
+      const posicion_y = Math.max(...elementos_linea.map((elemento) => elemento.transform[5] ?? 0));
+      const geometria_pdf = {
+        x: Math.min(...elementos_linea.map((elemento) => elemento.transform[4] ?? 0)),
+        y: posicion_y,
+        alto: mediana_numeros(elementos_linea.map((elemento) => elemento.height)),
+        ancho_pagina: dimensiones_pagina.width,
+      };
+      lineas_extraidas.push({ id: `pagina-${numero_pagina}-linea-${indice}`, pagina: numero_pagina, texto, posicion_y, alto_pagina, fuentes, geometria_pdf });
     }
     pagina.cleanup();
     notificar?.(numero_pagina, total_paginas, "Extrayendo páginas");
     await ceder_control_interfaz();
   }
   const marginales = detectar_lineas_marginales_repetidas(lineas_extraidas);
-  lineas_extraidas.filter(({ id }) => !marginales.has(id)).forEach(({ id, pagina, texto, fuentes }) => {
-    bloques.push(crear_bloque_pdf(id, pagina, texto, fuentes));
+  lineas_extraidas.filter(({ id }) => !marginales.has(id)).forEach(({ id, pagina, texto, fuentes, geometria_pdf }) => {
+    bloques.push(crear_bloque_pdf(id, pagina, texto, fuentes, geometria_pdf));
   });
   const informacion = metadata?.info as { Title?: string; Author?: string } | undefined;
   const indice_documento: EntradaIndice[] = [];
@@ -83,8 +120,9 @@ export async function extraer_pdf(datos: ArrayBuffer, nombre_archivo: string, no
       if (typeof destino === "string") destino = await pdf.getDestination(destino);
       let pagina: number | null = null;
       if (Array.isArray(destino) && destino[0]) pagina = await pdf.getPageIndex(destino[0]).then((valor) => valor + 1).catch(() => null);
-      const texto_objetivo = bloques.find((bloque) => bloque.pagina === pagina)?.contenido ?? item.title;
-      if (item.title?.trim()) indice_documento.push({ titulo: item.title.trim(), nivel, texto_objetivo });
+      const titulo = decodificar_entidades_texto(item.title ?? "").trim();
+      const texto_objetivo = bloques.find((bloque) => bloque.pagina === pagina)?.contenido ?? titulo;
+      if (titulo) indice_documento.push({ titulo, nivel, texto_objetivo });
       if (item.items?.length) await recorrer_esquema(item.items, nivel + 1);
     }
   }
@@ -215,11 +253,4 @@ export async function extraer_epub(datos: ArrayBuffer, nombre_archivo: string, n
     portada,
     version_cache: VERSION_CACHE_DOCUMENTO,
   };
-}
-
-export async function extraer_documento(archivo: File): Promise<DocumentoProcesado> {
-  const datos = await archivo.arrayBuffer();
-  if (/\.pdf$/i.test(archivo.name)) return extraer_pdf(datos, archivo.name);
-  if (/\.epub$/i.test(archivo.name)) return extraer_epub(datos, archivo.name);
-  throw new Error("Formato no admitido. Seleccione PDF o EPUB.");
 }

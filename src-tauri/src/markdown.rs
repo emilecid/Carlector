@@ -3,7 +3,7 @@ use std::path::Path;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde::Serialize;
 
-const VERSION_CACHE_DOCUMENTO: u32 = 6;
+const VERSION_CACHE_DOCUMENTO: u32 = 10;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct BloqueMarkdown {
@@ -181,4 +181,14 @@ pub fn extraer_markdown(fuente: &str, nombre_archivo: &str) -> DocumentoMarkdown
         Path::new(nombre_archivo).file_stem().and_then(|nombre| nombre.to_str()).filter(|nombre| !nombre.trim().is_empty()).unwrap_or("Documento Markdown").to_string()
     });
     DocumentoMarkdown { titulo, autor: "Autor desconocido".to_string(), idioma: String::new(), formato: "MARKDOWN".to_string(), bloques, indice, version_cache: VERSION_CACHE_DOCUMENTO }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VERSION_CACHE_DOCUMENTO;
+
+    #[test]
+    fn usa_la_version_vigente_de_cache_documental() {
+        assert_eq!(VERSION_CACHE_DOCUMENTO, 10);
+    }
 }

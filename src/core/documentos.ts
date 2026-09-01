@@ -1,8 +1,16 @@
 import type { EntradaIndice, EstructuraDocumento, TipoFragmento } from "./modelos.ts";
 import { normalizar_texto_pdf, type CambioNormalizacionPdf } from "./limpieza_pdf.ts";
 
-const PATRON_SIMBOLOS_MATEMATICOS = /[=≈≠≤≥∑∫√∞∂∇±×÷^_{}()[\]|]/g;
+const PATRON_SIMBOLOS_MATEMATICOS = /[=≈≠≤≥∑∫√∞∂∇±×÷^_{}|]/g;
 const PATRON_FUENTE_MATEMATICA = /(?:math|symbol|cmr|cmmi|cmsy|msam|msbm|stix)/i;
+export const VERSION_CACHE_DOCUMENTO = 10;
+
+export interface GeometriaLineaPdf {
+  x: number;
+  y: number;
+  alto: number;
+  ancho_pagina: number;
+}
 
 export interface BloqueDocumento {
   id: string;
@@ -17,9 +25,10 @@ export interface BloqueDocumento {
   alineacion?: "left" | "center" | "right" | "justify";
   inicio_fuente?: number;
   fin_fuente?: number;
+  geometria_pdf?: GeometriaLineaPdf;
 }
 
-export function crear_bloque_pdf(id: string, pagina: number, contenido_original: string, fuentes: string[]): BloqueDocumento {
+export function crear_bloque_pdf(id: string, pagina: number, contenido_original: string, fuentes: string[], geometria_pdf?: GeometriaLineaPdf): BloqueDocumento {
   const normalizado = normalizar_texto_pdf(contenido_original);
   const fue_modificado = normalizado.texto !== contenido_original;
   return {
@@ -29,6 +38,7 @@ export function crear_bloque_pdf(id: string, pagina: number, contenido_original:
     normalizaciones: fue_modificado ? normalizado.cambios : undefined,
     tipo: clasificar_linea_pdf(normalizado.texto, fuentes),
     pagina,
+    geometria_pdf,
   };
 }
 

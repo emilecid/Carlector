@@ -29,7 +29,7 @@ const VOCALES_DIERESIS: Record<string, string> = {
   a: "ä", e: "ë", i: "ï", o: "ö", u: "ü",
   A: "Ä", E: "Ë", I: "Ï", O: "Ö", U: "Ü",
 };
-const PATRON_ARTEFACTO_TEX = /´\s+([aeiouAEIOUıİ])|˜\s+([nN])|¨\s+([aeiouAEIOU])|([\p{L}]\p{M}+)/gu;
+const PATRON_ARTEFACTO_TEX = /´\s*([aeiouAEIOUıİ])|˜\s*([nN])|¨\s*([aeiouAEIOU])|([\p{L}]\p{M}+)/gu;
 
 export function normalizar_texto_pdf(original: string): TextoNormalizadoPdf {
   let cursor_original = 0;

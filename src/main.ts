@@ -5,19 +5,19 @@ import { mostrar_configuracion_kokoro, normalizar_configuracion_kokoro, VOCES_KO
 import { buscar_indices_texto } from "./core/busqueda_lector.ts";
 import { calcular_ventana_renderizado, crear_lotes_renderizado } from "./core/carga_documento.ts";
 import { calcular_plan_rsvp, indices_locuciones_adelantadas, type PasoRsvp } from "./core/cola_kokoro.ts";
-import { convertir_bloques_a_texto, type DocumentoProcesado } from "./core/documentos.ts";
+import { convertir_bloques_a_texto, VERSION_CACHE_DOCUMENTO, type DocumentoProcesado } from "./core/documentos.ts";
 import type { CarpetaBiblioteca, DocumentoBiblioteca, EstadoLecturaDocumento, FragmentoGuardado, FragmentoLectura, NotaDocumento, PerfilLectura, PoliticaMatematica } from "./core/modelos.ts";
 import { debe_guardar_progreso, fragmento_esta_destacado, resolver_destino_indice } from "./core/herramientas_lectura.ts";
 import { resolver_indice_fragmento } from "./core/navegacion_lector.ts";
-import { calcular_posicion_superpuesta, crear_ejecutor_diferido } from "./core/interfaz.ts";
-import { abrir_pestana, acoplar_documento, ajustar_proporciones_paneles, cerrar_pestana, normalizar_documentos_divididos, normalizar_sesion_division, normalizar_sesion_pestanas, proporciones_uniformes, type SesionDivision, type SesionPestanas, type ZonaAcoplamiento } from "./core/pestanas.ts";
+import { calcular_posicion_superpuesta, crear_ejecutor_diferido, resolver_panel_izquierdo } from "./core/interfaz.ts";
+import { abrir_pestana, ajustar_proporciones_paneles, alternar_documento_mosaico, cerrar_pestana, normalizar_documentos_divididos, normalizar_sesion_division, normalizar_sesion_pestanas, proporciones_uniformes, type SesionDivision, type SesionPestanas } from "./core/pestanas.ts";
 import { resolver_control_paquete_voz } from "./core/interfaz_voz.ts";
 import { crear_informe_error } from "./core/informador_errores.ts";
 import { crear_exportacion_libreta, crear_html_exportacion_libreta } from "./core/libreta.ts";
 import { ajustar_palabras_por_minuto, ajustar_ritmo_general, ajustar_velocidad, clases_visibilidad_paneles, combinar_componentes_documento, PERFIL_PREDETERMINADO, TEMAS_PREDEFINIDOS, normalizar_perfil, velocidades_desde_ritmo, type PerfilLecturaParcial } from "./core/perfiles.ts";
-import { segmentar_bloques, segmentar_texto } from "./core/segmentacion.ts";
+import { segmentar_bloques, segmentar_texto, unidades_fragmento_lectura } from "./core/segmentacion.ts";
 import { agrupar_locuciones, indice_locucion_en_posicion } from "./core/tts.ts";
-import { ajustar_zoom_pdf, cambio_zoom_gesto_pdf, indice_de_punto_pdf, indice_de_seleccion_pdf, indice_inicial_pagina, mapear_fragmentos_pdf, pagina_de_fragmento, rango_relativo_fragmento_pdf, rango_relativo_unidad_pdf, rango_textual_unidad_pdf, resolver_pagina_pdf, type RangoTextoPdf } from "./core/visor_pdf.ts";
+import { ajustar_zoom_pdf, cambio_zoom_gesto_pdf, indice_de_punto_pdf, indice_de_seleccion_pdf, indice_inicial_pagina, mapear_fragmentos_pdf, pagina_de_fragmento, rango_canonico_unidad_pdf, rango_relativo_fragmento_pdf, rango_relativo_unidad_pdf, rango_textual_unidad_pdf, resolver_pagina_pdf, type RangoTextoPdf } from "./core/visor_pdf.ts";
 import { BIBLIOTECA_TEMAS } from "./core/temas.ts";
 import { combinar_estado_repositorios, type RepositorioVoz } from "./core/repositorios_voz.ts";
 import { ReproductorWebAudio } from "./infra/reproductor_web_audio.ts";
@@ -52,11 +52,8 @@ let fragmentos_guardados: FragmentoGuardado[] = persistencia.fragmentos();
 let notas_documento: NotaDocumento[] = persistencia.notas();
 let sesion_pestanas: SesionPestanas = persistencia.pestanas();
 let sesion_division: SesionDivision = persistencia.division();
-let id_pestana_arrastrada: string | null = null;
 let filtro_biblioteca: FiltroBiblioteca = { tipo: "raiz" };
 let consulta_biblioteca = "";
-let pestana_izquierda: "biblioteca" | "indice" = "biblioteca";
-let pestana_derecha: "perfil" | "fragmentos" = "fragmentos";
 let documento_actual: DocumentoBiblioteca | null = null;
 let fragmentos: FragmentoLectura[] = [];
 let indice_fragmento = 0;
@@ -67,7 +64,6 @@ const binarios_pdf_web = new Map<string, ArrayBuffer>();
 const TAMANO_VENTANA_TTS = 12;
 const TAMANO_LOTE_RENDERIZADO = 320;
 const TAMANO_VENTANA_DOM = 600;
-const VERSION_CACHE_DOCUMENTO = 6;
 const CANTIDAD_ADELANTADA_KOKORO = 3;
 const CONFIGURACION_HTML_LIBRETA = {
   ALLOWED_TAGS: ["article", "header", "section", "span", "h1", "h2", "h3", "p", "time", "blockquote", "br"],
@@ -124,10 +120,13 @@ let miniaturas_pdf_visibles = persistencia.miniaturasPdf();
 let autoscroll_suspendido = false;
 let cola_apertura_archivos: Promise<void> = Promise.resolve();
 const ultimos_guardados_paneles = new Map<string, number>();
+const temporizadores_paneles = new Map<string, number>();
+const paneles_reproduciendo = new Set<string>();
 let foco_antes_modal: HTMLElement | null = null;
 let foco_antes_busqueda: HTMLElement | null = null;
 let foco_antes_libreta: HTMLElement | null = null;
 let libreta_flotante_abierta = false;
+const anclas_superposiciones = new WeakMap<HTMLElement, { izquierda: number; superior: number; derecha: number; inferior: number }>();
 const ETIQUETAS_ATAJOS: Record<AccionAtajo, string> = {
   buscar: "Buscar",
   reproducir: "Reproducir o pausar",
@@ -204,6 +203,15 @@ function cerrar_modal(selector: string): void {
   foco_antes_modal = null;
 }
 
+function actualizar_boton_panel_izquierdo(): void {
+  const boton = document.querySelector<HTMLButtonElement>("#alternar-panel-biblioteca");
+  if (!boton) return;
+  const nombre_panel = resolver_panel_izquierdo(vista_actual, documento_actual?.id ?? null) === "biblioteca" ? "biblioteca" : "índice";
+  boton.textContent = perfil_actual.componentes.biblioteca ? "‹" : "›";
+  boton.setAttribute("aria-label", `${perfil_actual.componentes.biblioteca ? "Ocultar" : "Mostrar"} ${nombre_panel}`);
+  boton.setAttribute("aria-expanded", String(perfil_actual.componentes.biblioteca));
+}
+
 function aplicar_perfil(): void {
   const raiz = document.documentElement;
   raiz.style.setProperty("--fuente-lectura", perfil_actual.fuente);
@@ -225,16 +233,11 @@ function aplicar_perfil(): void {
   document.body.classList.toggle("sin-controles", !perfil_actual.componentes.controles);
   document.body.classList.toggle("sin-herramientas-pdf", !perfil_actual.componentes.herramientas_pdf);
   document.body.classList.toggle("sin-acceso-libreta", !perfil_actual.componentes.acceso_libreta);
-  const boton_biblioteca = document.querySelector<HTMLButtonElement>("#alternar-panel-biblioteca");
   const boton_inspector = document.querySelector<HTMLButtonElement>("#alternar-panel-inspector");
-  if (boton_biblioteca) {
-    boton_biblioteca.textContent = perfil_actual.componentes.biblioteca ? "‹" : "›";
-    boton_biblioteca.setAttribute("aria-label", perfil_actual.componentes.biblioteca ? "Ocultar biblioteca" : "Mostrar biblioteca");
-    boton_biblioteca.setAttribute("aria-expanded", String(perfil_actual.componentes.biblioteca));
-  }
+  actualizar_boton_panel_izquierdo();
   if (boton_inspector) {
     boton_inspector.textContent = perfil_actual.componentes.inspector ? "›" : "‹";
-    boton_inspector.setAttribute("aria-label", perfil_actual.componentes.inspector ? "Ocultar perfil activo" : "Mostrar perfil activo");
+    boton_inspector.setAttribute("aria-label", perfil_actual.componentes.inspector ? "Ocultar Libreta" : "Mostrar Libreta");
     boton_inspector.setAttribute("aria-expanded", String(perfil_actual.componentes.inspector));
   }
 }
@@ -256,19 +259,13 @@ function renderizar_pestanas_documentos(): void {
     if (!documento) return "";
     const activa = vista_actual === "lector" && sesion_pestanas.activa === id;
     const dividida = sesion_division.documentos.includes(id);
-    return `<span class="pestana-documento"><button type="button" role="tab" draggable="true" aria-selected="${activa}" aria-keyshortcuts="Meta+Shift+ArrowLeft Meta+Shift+ArrowRight Meta+Shift+ArrowUp Meta+Shift+ArrowDown" tabindex="${activa ? "0" : "-1"}" data-pestana-documento="${escapar_html(id)}" title="${escapar_html(documento.titulo)} · arrastra para crear mosaico">${escapar_html(documento.titulo)}</button><button type="button" class="dividir-pestana ${dividida ? "activa" : ""}" data-dividir-pestana="${escapar_html(id)}" aria-pressed="${dividida}" aria-label="${dividida ? "Quitar de pantalla dividida" : "Mostrar junto al documento activo"}: ${escapar_html(documento.titulo)}" ${activa ? "disabled" : ""}>↔</button><button type="button" class="cerrar-pestana" data-cerrar-pestana="${escapar_html(id)}" aria-label="Cerrar ${escapar_html(documento.titulo)}">×</button></span>`;
+    return `<span class="pestana-documento"><button type="button" role="tab" aria-selected="${activa}" tabindex="${activa ? "0" : "-1"}" data-pestana-documento="${escapar_html(id)}" title="${escapar_html(documento.titulo)}">${escapar_html(documento.titulo)}</button><button type="button" class="dividir-pestana ${dividida ? "activa" : ""}" data-dividir-pestana="${escapar_html(id)}" aria-pressed="${dividida}" aria-label="${dividida ? "Quitar del mosaico" : "Añadir al mosaico"}: ${escapar_html(documento.titulo)}" ${activa ? "disabled" : ""}>↔</button><button type="button" class="cerrar-pestana" data-cerrar-pestana="${escapar_html(id)}" aria-label="Cerrar ${escapar_html(documento.titulo)}">×</button></span>`;
   }).join("");
   if (foco && accion_foco) {
     const atributo = accion_foco === "dividir" ? "data-dividir-pestana" : accion_foco === "cerrar" ? "data-cerrar-pestana" : "data-pestana-documento";
     barra.querySelector<HTMLElement>(`[${atributo}="${CSS.escape(foco)}"]`)?.focus();
   }
   document.querySelector<HTMLElement>("[data-vista='biblioteca']")?.classList.toggle("activa", vista_actual === "biblioteca");
-  const boton_orientacion = document.querySelector<HTMLButtonElement>("#alternar-orientacion-mosaico");
-  if (boton_orientacion) {
-    boton_orientacion.hidden = sesion_division.documentos.length === 0;
-    boton_orientacion.textContent = sesion_division.orientacion === "horizontal" ? "▥" : "▦";
-    boton_orientacion.setAttribute("aria-label", sesion_division.orientacion === "horizontal" ? "Cambiar mosaico a filas" : "Cambiar mosaico a columnas");
-  }
 }
 
 async function cerrar_pestana_documento(id: string): Promise<void> {
@@ -283,75 +280,21 @@ async function cerrar_pestana_documento(id: string): Promise<void> {
   renderizar_pestanas_documentos();
 }
 
-function alternar_pestana_dividida(id: string): void {
+async function alternar_pestana_dividida(id: string): Promise<void> {
   if (id === sesion_pestanas.activa) return;
-  sesion_division.documentos = sesion_division.documentos.includes(id)
-    ? sesion_division.documentos.filter((actual) => actual !== id)
-    : [...sesion_division.documentos, id].slice(-2);
-  sesion_division.proporciones = proporciones_uniformes(sesion_division.documentos.length + 1);
-  sesion_division.orientacion = "horizontal";
-  persistencia.guardarDivision(sesion_division);
-  renderizar_pestanas_documentos();
-  if (vista_actual === "lector") void renderizar_lector();
-}
-
-function ocultar_zonas_acoplamiento(): void {
-  id_pestana_arrastrada = null;
-  const zonas = document.querySelector<HTMLElement>("#zonas-acoplamiento");
-  if (!zonas) return;
-  zonas.hidden = true;
-  zonas.classList.remove("ajuste-manual");
-  zonas.querySelectorAll("[data-zona-acoplamiento]").forEach((zona) => zona.classList.remove("activa"));
-}
-
-function mostrar_zonas_acoplamiento(id_documento: string): void {
-  if (!sesion_pestanas.activa || id_documento === sesion_pestanas.activa) return;
-  id_pestana_arrastrada = id_documento;
-  const zonas = document.querySelector<HTMLElement>("#zonas-acoplamiento");
-  if (!zonas) return;
-  zonas.hidden = false;
-  const estado = zonas.querySelector<HTMLElement>("#estado-acoplamiento");
-  if (estado) estado.textContent = "Suelta en una zona. Mantén Command para fijar el tamaño desde la posición del puntero.";
-}
-
-function proporcion_acoplamiento(evento: DragEvent, zona: ZonaAcoplamiento): number | undefined {
-  if (!evento.metaKey) return undefined;
-  const vista = document.querySelector<HTMLElement>("#vista-principal");
-  if (!vista) return undefined;
-  const limites = vista.getBoundingClientRect();
-  const horizontal = zona === "izquierda" || zona === "derecha";
-  const extension = Math.max(1, horizontal ? limites.width : limites.height);
-  const distancia = zona === "izquierda"
-    ? evento.clientX - limites.left
-    : zona === "derecha"
-      ? limites.right - evento.clientX
-      : zona === "arriba"
-        ? evento.clientY - limites.top
-        : limites.bottom - evento.clientY;
-  return Math.min(70, Math.max(15, Math.round((distancia / extension) * 200)));
-}
-
-function aplicar_acoplamiento(id_documento: string, zona: ZonaAcoplamiento, proporcion?: number): void {
-  const resultado = acoplar_documento(sesion_division, id_documento, sesion_pestanas.activa, zona, new Set(sesion_pestanas.abiertas), proporcion);
+  const resultado = alternar_documento_mosaico(sesion_division, id, sesion_pestanas.activa, new Set(sesion_pestanas.abiertas));
   sesion_division = resultado.division;
   persistencia.guardarDivision(sesion_division);
-  ocultar_zonas_acoplamiento();
-  if (resultado.activo && resultado.activo !== sesion_pestanas.activa) void abrir_documento(resultado.activo);
-  else {
-    renderizar_pestanas_documentos();
-    if (vista_actual === "lector") void renderizar_lector();
-  }
-}
-
-function alternar_orientacion_mosaico(): void {
-  establecer_orientacion_mosaico(sesion_division.orientacion === "horizontal" ? "vertical" : "horizontal");
-}
-
-function establecer_orientacion_mosaico(orientacion: SesionDivision["orientacion"]): void {
-  if (!sesion_division.documentos.length || sesion_division.orientacion === orientacion) return;
-  sesion_division = { ...sesion_division, orientacion };
-  persistencia.guardarDivision(sesion_division);
+  const estado = document.querySelector<HTMLElement>("#estado-mosaico");
+  if (estado) estado.textContent = resultado.limite_alcanzado ? "Máximo tres documentos en mosaico." : "";
   renderizar_pestanas_documentos();
+  const documento = documentos.find((actual) => actual.id === id);
+  if (!resultado.limite_alcanzado && sesion_division.documentos.includes(id) && documento && !documentos_procesados.has(id)) {
+    if (estado) estado.textContent = `Preparando ${documento.titulo}…`;
+    try { await procesar_documento_nativo(documento); }
+    catch (error) { informar_error(`Preparación de ${documento.titulo}`, error); }
+    if (estado) estado.textContent = "";
+  }
   if (vista_actual === "lector") void renderizar_lector();
 }
 
@@ -483,19 +426,16 @@ function renderizar_panel_biblioteca(): void {
   const cantidad_raiz = documentos.filter(({ carpeta_id }) => !carpeta_id).length;
   navegacion.innerHTML = `<button class="nav-item ${filtro_biblioteca.tipo === "raiz" ? "activo" : ""}" data-filtro="raiz">▦ Biblioteca <span class="nav-contador">${cantidad_raiz}</span></button><button class="nav-item ${filtro_biblioteca.tipo === "todos" ? "activo" : ""}" data-filtro="todos">≡ Todos <span class="nav-contador">${documentos.length}</span></button><button class="nav-item ${filtro_biblioteca.tipo === "en_progreso" ? "activo" : ""}" data-filtro="en_progreso">◷ En progreso <span class="nav-contador">${cantidad_progreso}</span></button>`;
   arbol.innerHTML = carpetas.length
-    ? carpetas.map((carpeta) => `<button class="nav-item ${filtro_biblioteca.tipo === "carpeta" && filtro_biblioteca.carpeta_id === carpeta.id ? "activo" : ""}" data-carpeta="${escapar_html(carpeta.id)}" title="${carpeta.ruta ? "Carpeta enlazada al sistema" : "Carpeta virtual"}; arrastra libros aquí; click derecho para gestionar">${carpeta.ruta ? "▾" : "▸"} ${escapar_html(carpeta.nombre)} <span class="nav-contador">${documentos.filter((documento) => documento.carpeta_id === carpeta.id).length}</span></button>`).join("")
+    ? carpetas.map((carpeta) => `<button class="nav-item ${filtro_biblioteca.tipo === "carpeta" && filtro_biblioteca.carpeta_id === carpeta.id ? "activo" : ""}" data-carpeta="${escapar_html(carpeta.id)}" title="Carpeta real; arrastra libros aquí; click derecho para gestionar">▾ ${escapar_html(carpeta.nombre)} <span class="nav-contador">${documentos.filter((documento) => documento.carpeta_id === carpeta.id).length}</span></button>`).join("")
     : `<p class="carpetas-vacias">Sin carpetas. Haz click derecho para añadir una.</p>`;
-  const carpeta_finder = carpeta_sistema_activa();
-  const boton_finder = document.querySelector<HTMLButtonElement>("#abrir-carpeta-finder");
-  if (boton_finder) {
-    boton_finder.disabled = !carpeta_finder;
-    boton_finder.title = carpeta_finder ? `Abrir ${carpeta_finder.nombre} en Finder` : "Añade una carpeta del sistema con click derecho";
-    boton_finder.setAttribute("aria-label", boton_finder.title);
-  }
   navegacion.querySelectorAll<HTMLElement>("[data-filtro]").forEach((boton) => boton.addEventListener("click", () => {
     filtro_biblioteca = { tipo: boton.dataset.filtro as "raiz" | "todos" | "en_progreso" };
     renderizar_panel_biblioteca(); renderizar_biblioteca();
   }));
+  const raiz = navegacion.querySelector<HTMLElement>("[data-filtro='raiz']");
+  raiz?.addEventListener("dragover", (evento) => { evento.preventDefault(); raiz.classList.add("destino-arrastre"); });
+  raiz?.addEventListener("dragleave", () => raiz.classList.remove("destino-arrastre"));
+  raiz?.addEventListener("drop", (evento) => { evento.preventDefault(); raiz.classList.remove("destino-arrastre"); void mover_documento_a_carpeta(evento.dataTransfer?.getData("text/carlector-documento") ?? "", null); });
   arbol.querySelectorAll<HTMLElement>("[data-carpeta]").forEach((boton) => {
     boton.addEventListener("click", () => { filtro_biblioteca = { tipo: "carpeta", carpeta_id: boton.dataset.carpeta ?? "" }; renderizar_panel_biblioteca(); renderizar_biblioteca(); });
     boton.addEventListener("dragover", (evento) => { evento.preventDefault(); boton.classList.add("destino-arrastre"); });
@@ -506,17 +446,23 @@ function renderizar_panel_biblioteca(): void {
 }
 
 function renderizar_panel_izquierdo(): void {
-  document.querySelectorAll<HTMLElement>("[data-pestana-izquierda]").forEach((boton) => boton.classList.toggle("activo", boton.dataset.pestanaIzquierda === pestana_izquierda));
+  const contexto = resolver_panel_izquierdo(vista_actual, documento_actual?.id ?? null);
+  actualizar_boton_panel_izquierdo();
+  const panel = document.querySelector<HTMLElement>("#panel-biblioteca");
+  const titulo = document.querySelector<HTMLElement>("#titulo-panel-izquierdo");
   const contenido_biblioteca = document.querySelector<HTMLElement>("#contenido-biblioteca");
   const contenido_indice = document.querySelector<HTMLElement>("#contenido-indice");
-  if (contenido_biblioteca) contenido_biblioteca.hidden = pestana_izquierda !== "biblioteca";
-  if (contenido_indice) contenido_indice.hidden = pestana_izquierda !== "indice";
-  if (pestana_izquierda === "biblioteca") { renderizar_panel_biblioteca(); return; }
+  if (panel) panel.setAttribute("aria-label", contexto === "biblioteca" ? "Biblioteca" : `Índice de ${documento_actual?.titulo ?? "documento"}`);
+  if (titulo) titulo.textContent = contexto === "biblioteca" ? "Biblioteca" : "Índice";
+  if (contenido_biblioteca) contenido_biblioteca.hidden = contexto !== "biblioteca";
+  if (contenido_indice) contenido_indice.hidden = contexto !== "indice";
+  if (contexto === "biblioteca") { renderizar_panel_biblioteca(); return; }
   if (!contenido_indice) return;
   const entradas = documento_actual ? documentos_procesados.get(documento_actual.id)?.indice ?? [] : [];
-  contenido_indice.innerHTML = entradas.length
+  const indice = entradas.length
     ? `<nav class="navegacion indice-documento">${entradas.map((entrada) => `<button class="nav-item" data-destino-indice="${escapar_html(entrada.texto_objetivo)}" ${documento_renderizando ? "disabled" : ""} style="padding-left:${10 + Math.min(entrada.nivel - 1, 4) * 12}px">${escapar_html(entrada.titulo)}</button>`).join("")}</nav>`
     : `<p class="carpetas-vacias">${documento_actual ? "Documento sin índice estructurado." : "Abre un documento para ver su índice."}</p>`;
+  contenido_indice.innerHTML = indice;
   contenido_indice.querySelectorAll<HTMLElement>("[data-destino-indice]").forEach((boton) => boton.addEventListener("click", () => {
     const destino = resolver_destino_indice(fragmentos, boton.dataset.destinoIndice ?? "");
     if (destino !== null) { if (vista_actual !== "lector") cambiar_vista("lector"); mover_lector_a_fragmento(destino); }
@@ -524,22 +470,19 @@ function renderizar_panel_izquierdo(): void {
 }
 
 function renderizar_panel_fragmentos(): void {
-  document.querySelectorAll<HTMLElement>("[data-pestana-derecha]").forEach((boton) => boton.classList.toggle("activo", boton.dataset.pestanaDerecha === pestana_derecha));
-  const perfil = document.querySelector<HTMLElement>("#contenido-perfil");
   const guardados = document.querySelector<HTMLElement>("#contenido-fragmentos");
-  if (perfil) perfil.hidden = pestana_derecha !== "perfil";
   if (!guardados) return;
-  guardados.hidden = !libreta_flotante_abierta && pestana_derecha !== "fragmentos";
+  guardados.hidden = libreta_flotante_abierta;
   const del_documento = documento_actual ? fragmentos_guardados.filter(({ documento_id }) => documento_id === documento_actual?.id) : [];
   const notas_del_documento = documento_actual ? notas_documento.filter(({ documento_id }) => documento_id === documento_actual?.id) : [];
   const controles_nota = documento_actual ? "" : "disabled";
   const opciones_destino = del_documento.map((guardado, indice) => `<option value="${escapar_html(guardado.id)}">Fragmento ${indice + 1}: ${escapar_html(guardado.texto.slice(0, 54))}</option>`).join("");
-  guardados.innerHTML = `<div class="libreta-documento"><section id="libreta-fragmentos" class="seccion-libreta"><h2 class="panel-titulo">Fragmentos</h2><div class="lista-fragmentos">${del_documento.length ? del_documento.map((guardado) => `<article class="fragmento-guardado"><button data-ir-fragmento="${guardado.indice_fragmento}">${escapar_html(guardado.texto)}</button><button data-vincular-nota="${escapar_html(guardado.id)}" aria-label="Añadir nota a este fragmento" title="Añadir nota">✎</button><button class="boton-destacado ${fragmento_esta_destacado(guardado) ? "activo" : ""}" data-destacar-fragmento="${escapar_html(guardado.id)}" aria-label="${fragmento_esta_destacado(guardado) ? "Quitar destacado" : "Destacar fragmento"}" title="${fragmento_esta_destacado(guardado) ? "Quitar destacado" : "Destacar fragmento"}">${fragmento_esta_destacado(guardado) ? "★" : "☆"}</button><button data-eliminar-fragmento="${escapar_html(guardado.id)}" aria-label="Eliminar fragmento">×</button></article>`).join("") : `<p class="carpetas-vacias">Selecciona texto y usa click derecho para guardarlo.</p>`}</div></section><section id="libreta-notas" class="seccion-libreta"><h2 class="panel-titulo">Notas</h2><form id="formulario-nota" class="formulario-nota"><label for="destino-nota">Asociar con</label><select id="destino-nota" ${controles_nota}><option value="">Nota general</option>${opciones_destino}</select><label class="oculto" for="texto-nota">Nueva nota</label><textarea id="texto-nota" rows="3" maxlength="4000" placeholder="Escribe una nota sobre este documento" ${controles_nota}></textarea><button class="boton primario" type="submit" ${controles_nota}>Guardar nota</button></form><div id="lista-notas" class="lista-notas">${notas_del_documento.length ? notas_del_documento.map((nota) => {
+  guardados.innerHTML = `<div class="libreta-contenido"><header class="cabecera-libreta"><h2 id="titulo-libreta" class="panel-titulo">Libreta</h2><button id="exportar-libreta-pdf" class="boton exportar-libreta-pdf" data-exportar-libreta-pdf type="button" ${controles_nota}>Exportar PDF…</button></header><div class="libreta-documento"><section id="libreta-fragmentos" class="seccion-libreta"><header class="cabecera-fragmentos"><h2 class="panel-titulo">Fragmentos</h2><button id="abrir-libreta-flotante" class="boton-libreta-flotante" type="button" aria-label="Abrir Libreta flotante" aria-controls="libreta-flotante" aria-expanded="${libreta_flotante_abierta}" title="Abrir Libreta flotante">↗</button></header><div class="lista-fragmentos">${del_documento.length ? del_documento.map((guardado) => `<article class="fragmento-guardado"><button data-ir-fragmento="${guardado.indice_fragmento}">${escapar_html(guardado.texto)}</button><button data-vincular-nota="${escapar_html(guardado.id)}" aria-label="Añadir nota a este fragmento" title="Añadir nota">✎</button><button class="boton-destacado ${fragmento_esta_destacado(guardado) ? "activo" : ""}" data-destacar-fragmento="${escapar_html(guardado.id)}" aria-label="${fragmento_esta_destacado(guardado) ? "Quitar destacado" : "Destacar fragmento"}" title="${fragmento_esta_destacado(guardado) ? "Quitar destacado" : "Destacar fragmento"}">${fragmento_esta_destacado(guardado) ? "★" : "☆"}</button><button data-eliminar-fragmento="${escapar_html(guardado.id)}" aria-label="Eliminar fragmento">×</button></article>`).join("") : `<p class="carpetas-vacias">Selecciona texto y usa click derecho para guardarlo.</p>`}</div></section><section id="libreta-notas" class="seccion-libreta"><h2 class="panel-titulo">Notas</h2><form id="formulario-nota" class="formulario-nota"><label for="destino-nota">Asociar con</label><select id="destino-nota" ${controles_nota}><option value="">Nota general</option>${opciones_destino}</select><label class="oculto" for="texto-nota">Nueva nota</label><textarea id="texto-nota" rows="3" maxlength="4000" placeholder="Escribe una nota sobre este documento" ${controles_nota}></textarea><button class="boton primario" type="submit" ${controles_nota}>Guardar nota</button></form><div id="lista-notas" class="lista-notas">${notas_del_documento.length ? notas_del_documento.map((nota) => {
     const fragmento_vinculado = del_documento.find(({ id }) => id === nota.fragmento_id);
     const destino = fragmento_vinculado ? `<button class="destino-nota-guardada" data-ir-nota="${escapar_html(fragmento_vinculado.id)}">Fragmento: ${escapar_html(fragmento_vinculado.texto.slice(0, 48))}</button>` : `<span class="destino-nota-general">Nota general${nota.pagina ? ` · página ${nota.pagina}` : ""}</span>`;
     return `<article class="nota-documento"><div>${destino}<p>${escapar_html(nota.texto).replace(/\n/g, "<br>")}</p></div><button data-eliminar-nota="${escapar_html(nota.id)}" aria-label="Eliminar nota">×</button></article>`;
-  }).join("") : `<p class="carpetas-vacias">${documento_actual ? "Aún no hay notas." : "Abre un documento para escribir notas."}</p>`}</div></section></div>`;
-  guardados.querySelector("#libreta-fragmentos .panel-titulo")?.insertAdjacentHTML("afterend", `<button id="exportar-libreta-pdf" class="boton exportar-libreta-pdf" type="button" ${controles_nota}>Exportar PDF…</button>`);
+  }).join("") : `<p class="carpetas-vacias">${documento_actual ? "Aún no hay notas." : "Abre un documento para escribir notas."}</p>`}</div></section></div></div>`;
+  document.querySelectorAll<HTMLButtonElement>("[data-exportar-libreta-pdf]").forEach((boton) => { boton.disabled = !documento_actual; });
   guardados.querySelectorAll<HTMLElement>("[data-ir-fragmento]").forEach((boton) => boton.addEventListener("click", () => {
     const guardado = del_documento.find(({ indice_fragmento }) => indice_fragmento === Number(boton.dataset.irFragmento));
     const ancla_guardada = guardado?.ancla;
@@ -558,6 +501,7 @@ function renderizar_panel_fragmentos(): void {
     if (fragmento_vinculado) mover_lector_a_fragmento(fragmento_vinculado.indice_fragmento);
   }));
   guardados.querySelector<HTMLFormElement>("#formulario-nota")?.addEventListener("submit", (evento) => { evento.preventDefault(); void guardar_nota_manual(); });
+  guardados.querySelector("#abrir-libreta-flotante")?.addEventListener("click", abrir_libreta_flotante);
   guardados.querySelector("#exportar-libreta-pdf")?.addEventListener("click", abrir_vista_previa_libreta);
   guardados.querySelectorAll<HTMLElement>("[data-eliminar-nota]").forEach((boton) => boton.addEventListener("click", () => void eliminar_nota_manual(boton.dataset.eliminarNota ?? "")));
 }
@@ -587,10 +531,15 @@ function cerrar_libreta_flotante(): void {
   if (!ventana || !destino || !contenido) return;
   libreta_flotante_abierta = false;
   destino.append(contenido);
-  contenido.hidden = pestana_derecha !== "fragmentos";
+  contenido.hidden = false;
   ventana.hidden = true;
   document.querySelector("#abrir-libreta-flotante")?.setAttribute("aria-expanded", "false");
-  foco_antes_libreta?.focus();
+  const destino_foco = foco_antes_libreta?.isConnected && foco_antes_libreta.offsetParent !== null
+    ? foco_antes_libreta
+    : ["#salir-modo-enfoque", "[data-vista='biblioteca']", "#alternar-panel-biblioteca"]
+      .map((selector) => document.querySelector<HTMLElement>(selector))
+      .find((elemento) => elemento?.offsetParent !== null);
+  destino_foco?.focus();
   foco_antes_libreta = null;
 }
 
@@ -639,6 +588,52 @@ function enlazar_arrastre_libreta(): void {
     asa.addEventListener("pointermove", mover);
     asa.addEventListener("pointerup", terminar);
     asa.addEventListener("pointercancel", terminar);
+  });
+}
+
+function ajustar_tamano_libreta(ventana: HTMLElement, ancho: number, alto: number): void {
+  const rectangulo = ventana.getBoundingClientRect();
+  const ancho_maximo = Math.max(280, window.innerWidth - rectangulo.left - 8);
+  const alto_maximo = Math.max(280, window.innerHeight - rectangulo.top - 8);
+  ventana.style.left = `${rectangulo.left}px`;
+  ventana.style.top = `${rectangulo.top}px`;
+  ventana.style.right = "auto";
+  ventana.style.bottom = "auto";
+  ventana.style.width = `${Math.max(280, Math.min(ancho_maximo, ancho))}px`;
+  ventana.style.height = `${Math.max(280, Math.min(alto_maximo, alto))}px`;
+}
+
+function enlazar_redimension_libreta(): void {
+  const ventana = document.querySelector<HTMLElement>("#libreta-flotante");
+  const asa_redimension = document.querySelector<HTMLButtonElement>("#asa-redimension-libreta");
+  if (!ventana || !asa_redimension) return;
+  let inicio: { puntero: number; x: number; y: number; ancho: number; alto: number } | null = null;
+  asa_redimension.addEventListener("pointerdown", (evento) => {
+    if (evento.pointerType === "mouse" && evento.button !== 0) return;
+    evento.preventDefault();
+    const rectangulo = ventana.getBoundingClientRect();
+    inicio = { puntero: evento.pointerId, x: evento.clientX, y: evento.clientY, ancho: rectangulo.width, alto: rectangulo.height };
+    asa_redimension.setPointerCapture(evento.pointerId);
+  });
+  asa_redimension.addEventListener("pointermove", (evento) => {
+    if (!inicio || evento.pointerId !== inicio.puntero) return;
+    ajustar_tamano_libreta(ventana, inicio.ancho + evento.clientX - inicio.x, inicio.alto + evento.clientY - inicio.y);
+  });
+  const terminar = (evento: PointerEvent): void => {
+    if (!inicio || evento.pointerId !== inicio.puntero) return;
+    inicio = null;
+    if (asa_redimension.hasPointerCapture(evento.pointerId)) asa_redimension.releasePointerCapture(evento.pointerId);
+  };
+  asa_redimension.addEventListener("pointerup", terminar);
+  asa_redimension.addEventListener("pointercancel", terminar);
+  asa_redimension.addEventListener("keydown", (evento) => {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(evento.key)) return;
+    evento.preventDefault();
+    const paso = evento.shiftKey ? 20 : 8;
+    const rectangulo = ventana.getBoundingClientRect();
+    const ancho = rectangulo.width + (evento.key === "ArrowLeft" ? -paso : evento.key === "ArrowRight" ? paso : 0);
+    const alto = rectangulo.height + (evento.key === "ArrowUp" ? -paso : evento.key === "ArrowDown" ? paso : 0);
+    ajustar_tamano_libreta(ventana, ancho, alto);
   });
 }
 
@@ -871,7 +866,9 @@ async function renderizar_pagina_pdf(numero_pagina?: number): Promise<void> {
 
 function sincronizar_pagina_pdf_con_fragmento(): void {
   if (!es_vista_pdf_original() || total_paginas_pdf <= 0) return;
-  const pagina = pagina_de_fragmento(fragmentos, indice_fragmento, pagina_pdf_actual, total_paginas_pdf);
+  const fragmento = fragmentos[indice_fragmento];
+  const pagina_activa = fragmento ? pagina_activa_fragmento_pdf(fragmento) : undefined;
+  const pagina = Math.min(Math.max(1, pagina_activa ?? pagina_de_fragmento(fragmentos, indice_fragmento, pagina_pdf_actual, total_paginas_pdf)), total_paginas_pdf);
   if (pagina === pagina_pdf_actual) return;
   pagina_pdf_actual = pagina;
   actualizar_barra_visor_pdf();
@@ -919,6 +916,13 @@ function estado_seguimiento_pdf(): { unidades: string[]; indice: number } {
   return { unidades: unidades_seguimiento_pdf, indice: Math.min(indice_unidad_pdf, Math.max(0, unidades_seguimiento_pdf.length - 1)) };
 }
 
+function pagina_activa_fragmento_pdf(fragmento: FragmentoLectura): number | undefined {
+  const seguimiento = estado_seguimiento_pdf();
+  const unidades = unidades_fragmento_lectura(fragmento);
+  const unidad = unidades.length === seguimiento.unidades.length ? unidades[seguimiento.indice] : undefined;
+  return unidad?.pagina ?? fragmento.pagina;
+}
+
 function limpiar_marcas_pdf(): void {
   document.querySelectorAll<HTMLElement>(".fragmento-pdf-activo,.unidad-pdf-activa").forEach((elemento) => {
     elemento.classList.remove("fragmento-pdf-activo", "unidad-pdf-activa");
@@ -936,13 +940,13 @@ function obtener_rango_visual_fragmento_pdf(hoja: HTMLElement, elementos: HTMLEl
   }
   const exacto = mapa.get(indice_fragmento);
   if (exacto) return { rango: exacto, exacto: true };
-  const aproximado = rango_relativo_fragmento_pdf(fragmentos, indice_fragmento);
+  const aproximado = rango_relativo_fragmento_pdf(fragmentos, indice_fragmento, pagina);
   return aproximado ? { rango: aproximado, exacto: false } : null;
 }
 
 function resaltar_fragmento_pdf(pagina_renderizada?: number): void {
   const fragmento = fragmentos[indice_fragmento];
-  const pagina = fragmento?.pagina;
+  const pagina = fragmento ? pagina_activa_fragmento_pdf(fragmento) : undefined;
   if (!fragmento || pagina === undefined || pagina_renderizada !== undefined && pagina_renderizada !== pagina) return;
   limpiar_marcas_pdf();
   const hoja = document.querySelector<HTMLElement>(`[data-pagina-pdf="${pagina}"]`);
@@ -964,7 +968,15 @@ function resaltar_fragmento_pdf(pagina_renderizada?: number): void {
   activos.forEach((elemento) => elemento.classList.add("fragmento-pdf-activo"));
   const seguimiento = estado_seguimiento_pdf();
   const pesos = seguimiento.unidades.map((unidad, indice) => Math.max(1, [...unidad].length + (indice < seguimiento.unidades.length - 1 ? 1 : 0)));
-  const rango_unidad = rango_textual_unidad_pdf(fragmento.visible, seguimiento.unidades, seguimiento.indice, rango)
+  const unidades_canonicas = unidades_fragmento_lectura(fragmento);
+  const unidad_canonica = unidades_canonicas.length === seguimiento.unidades.length ? unidades_canonicas[seguimiento.indice] : undefined;
+  const unidades_pagina = unidad_canonica?.pagina === undefined ? [] : unidades_canonicas.filter(({ pagina: pagina_unidad }) => pagina_unidad === unidad_canonica.pagina);
+  const indice_pagina = unidad_canonica ? unidades_pagina.indexOf(unidad_canonica) : -1;
+  const rango_multipagina = indice_pagina >= 0 && fragmento.paginas && fragmento.paginas.length > 1
+    ? rango_relativo_unidad_pdf(fragmentos, indice_fragmento, indice_pagina, unidades_pagina.map(({ texto }, indice) => Math.max(1, [...texto].length + (indice < unidades_pagina.length - 1 ? 1 : 0))), rango)
+    : null;
+  const rango_unidad = rango_multipagina
+    ?? (unidad_canonica ? rango_canonico_unidad_pdf(fragmento.visible, unidad_canonica, rango) : rango_textual_unidad_pdf(fragmento.visible, seguimiento.unidades, seguimiento.indice, rango))
     ?? rango_relativo_unidad_pdf(fragmentos, indice_fragmento, seguimiento.indice, pesos, rango);
   const unidades_activas = rango_unidad ? elementos.filter((elemento) => {
     const inicio = Number(elemento.dataset.inicioTextoPdf);
@@ -1113,12 +1125,115 @@ function enlazar_divisor_pdf_rsvp(): void {
   });
 }
 
+function fragmentos_documento_secundario(id: string): FragmentoLectura[] {
+  if (id === "demostracion") return segmentar_texto(TEXTO_DEMOSTRACION, perfil_actual.politica_matematica, { saltar_citas: perfil_actual.saltar_citas });
+  const procesado = documentos_procesados.get(id);
+  return procesado ? segmentar_bloques(procesado.bloques, perfil_actual.politica_matematica, { saltar_citas: perfil_actual.saltar_citas }) : [];
+}
+
+function estado_panel_secundario(documento: DocumentoBiblioteca, disponibles: FragmentoLectura[]): EstadoLecturaDocumento {
+  const guardado = documento.estado_lectura;
+  const indice_fragmento = Math.min(Math.max(0, Math.trunc(guardado?.indice_fragmento ?? 0)), Math.max(0, disponibles.length - 1));
+  const unidades = disponibles[indice_fragmento] ? unidades_fragmento_lectura(disponibles[indice_fragmento]) : [];
+  return {
+    indice_fragmento,
+    pagina: Math.max(1, Math.trunc(guardado?.pagina ?? disponibles[indice_fragmento]?.pagina ?? 1)),
+    indice_unidad: Math.min(Math.max(0, Math.trunc(guardado?.indice_unidad ?? 0)), Math.max(0, unidades.length - 1)),
+    desplazamiento: Math.max(0, guardado?.desplazamiento ?? 0),
+    modo_visual_pdf: guardado?.modo_visual_pdf ?? "texto",
+    modo_lectura: guardado?.modo_lectura ?? "continua",
+    unidad_rsvp: guardado?.unidad_rsvp ?? "frase",
+    componentes: guardado?.componentes ?? {
+      biblioteca: perfil_actual.componentes.biblioteca,
+      inspector: perfil_actual.componentes.inspector,
+      controles: perfil_actual.componentes.controles,
+    },
+  };
+}
+
+function texto_panel_secundario(fragmento: FragmentoLectura | undefined, estado: EstadoLecturaDocumento): string {
+  if (!fragmento) return "Abre esta pestaña una vez para preparar su contenido local.";
+  if (estado.modo_lectura !== "rsvp" || estado.unidad_rsvp === "frase" || fragmento.tipo === "matematica") return fragmento.visible;
+  return unidades_fragmento_lectura(fragmento)[estado.indice_unidad]?.texto ?? fragmento.visible;
+}
+
 function crear_panel_documento_secundario(id: string, proporcion: number): string {
   const documento = documentos.find((actual) => actual.id === id);
   if (!documento) return "";
-  const procesado = documentos_procesados.get(id);
-  const texto = id === "demostracion" ? TEXTO_DEMOSTRACION : procesado ? convertir_bloques_a_texto(procesado.bloques) : "Abre esta pestaña una vez para preparar su contenido local.";
-  return `<section class="panel-documento-lectura panel-documento-secundario" data-panel-documento="${escapar_html(id)}" style="--proporcion-panel:${proporcion}"><header><button type="button" data-activar-panel="${escapar_html(id)}">${escapar_html(documento.titulo)}</button><span>${documento.progreso}%</span></header><article tabindex="0">${escapar_html(texto)}</article></section>`;
+  const disponibles = fragmentos_documento_secundario(id);
+  const estado = estado_panel_secundario(documento, disponibles);
+  const fragmento = disponibles[estado.indice_fragmento];
+  const total_paginas = Math.max(1, documentos_procesados.get(id)?.total_paginas ?? 1, ...disponibles.map(({ pagina }) => pagina ?? 1));
+  const reproduciendo_panel = paneles_reproduciendo.has(id);
+  const selector_pagina = documento.formato === "PDF" ? `<label class="pagina-panel-documento">Página <input type="number" min="1" max="${total_paginas}" value="${Math.min(estado.pagina, total_paginas)}" data-pagina-panel="${escapar_html(id)}" aria-label="Página de ${escapar_html(documento.titulo)}"></label>` : "";
+  return `<section class="panel-documento-lectura panel-documento-secundario" data-panel-documento="${escapar_html(id)}" style="--proporcion-panel:${proporcion}"><header><button type="button" data-activar-panel="${escapar_html(id)}" title="Activar documento">${escapar_html(documento.titulo)}</button><span>${documento.progreso}%</span></header><div class="controles-panel-documento"><select data-modo-panel="${escapar_html(id)}" aria-label="Modo de lectura de ${escapar_html(documento.titulo)}"><option value="continua"${estado.modo_lectura === "continua" ? " selected" : ""}>Continua</option><option value="rsvp"${estado.modo_lectura === "rsvp" ? " selected" : ""}>RSVP</option></select><span class="navegacion-panel-documento"><button type="button" data-anterior-panel="${escapar_html(id)}" aria-label="Fragmento anterior de ${escapar_html(documento.titulo)}">←</button><button type="button" data-reproducir-panel="${escapar_html(id)}" aria-pressed="${reproduciendo_panel}" aria-label="${reproduciendo_panel ? "Pausar" : "Reproducir"} ${escapar_html(documento.titulo)}">${reproduciendo_panel ? "Ⅱ" : "▶"}</button><button type="button" data-siguiente-panel="${escapar_html(id)}" aria-label="Fragmento siguiente de ${escapar_html(documento.titulo)}">→</button></span>${selector_pagina}<span class="estado-panel-documento" aria-live="polite">${disponibles.length ? `${estado.indice_fragmento + 1}/${disponibles.length}` : "Sin contenido"}</span></div><article tabindex="0" class="${estado.modo_lectura === "rsvp" ? "panel-rsvp" : ""}">${escapar_html(texto_panel_secundario(fragmento, estado))}</article></section>`;
+}
+
+function actualizar_estado_panel_secundario(id: string, cambios: Partial<EstadoLecturaDocumento>): void {
+  const documento = documentos.find((actual) => actual.id === id);
+  if (!documento) return;
+  const disponibles = fragmentos_documento_secundario(id);
+  const estado_lectura = estado_panel_secundario({ ...documento, estado_lectura: { ...estado_panel_secundario(documento, disponibles), ...cambios } }, disponibles);
+  const progreso = disponibles.length ? Math.round(((estado_lectura.indice_fragmento + 1) / disponibles.length) * 100) : documento.progreso;
+  documentos = documentos.map((actual) => actual.id === id ? { ...actual, progreso, estado_lectura } : actual);
+  persistencia.guardarDocumentos(documentos);
+  if (isTauri() && id !== "demostracion") void invoke("guardar_progreso", { idDocumento: id, progreso, estadoLectura: estado_lectura });
+  const panel = document.querySelector<HTMLElement>(`[data-panel-documento="${CSS.escape(id)}"]`);
+  if (!panel?.classList.contains("panel-documento-secundario")) return;
+  const proporcion = Number.parseFloat(panel.style.getPropertyValue("--proporcion-panel")) || 0;
+  panel.outerHTML = crear_panel_documento_secundario(id, proporcion);
+  const reemplazo = document.querySelector<HTMLElement>(`[data-panel-documento="${CSS.escape(id)}"].panel-documento-secundario`);
+  if (reemplazo) enlazar_panel_documento_secundario(reemplazo);
+}
+
+function avanzar_panel_secundario(id: string, desplazamiento: number): boolean {
+  const documento = documentos.find((actual) => actual.id === id);
+  if (!documento) return false;
+  const disponibles = fragmentos_documento_secundario(id);
+  const estado = estado_panel_secundario(documento, disponibles);
+  const fragmento_actual = disponibles[estado.indice_fragmento];
+  const unidades = fragmento_actual ? unidades_fragmento_lectura(fragmento_actual) : [];
+  if (estado.modo_lectura === "rsvp" && estado.unidad_rsvp === "palabra") {
+    const siguiente_unidad = estado.indice_unidad + desplazamiento;
+    if (siguiente_unidad >= 0 && siguiente_unidad < unidades.length) {
+      actualizar_estado_panel_secundario(id, { indice_unidad: siguiente_unidad });
+      return true;
+    }
+  }
+  const siguiente_fragmento = estado.indice_fragmento + desplazamiento;
+  if (siguiente_fragmento < 0 || siguiente_fragmento >= disponibles.length) return false;
+  const fragmento_siguiente = disponibles[siguiente_fragmento];
+  if (!fragmento_siguiente) return false;
+  actualizar_estado_panel_secundario(id, { indice_fragmento: siguiente_fragmento, indice_unidad: desplazamiento < 0 ? Math.max(0, unidades_fragmento_lectura(fragmento_siguiente).length - 1) : 0, pagina: fragmento_siguiente.pagina ?? estado.pagina });
+  return true;
+}
+
+function programar_panel_secundario(id: string): void {
+  const anterior = temporizadores_paneles.get(id);
+  if (anterior !== undefined) window.clearTimeout(anterior);
+  if (!paneles_reproduciendo.has(id)) return;
+  const demora = Math.max(180, Math.round(60_000 / Math.max(60, perfil_actual.palabras_por_minuto)));
+  temporizadores_paneles.set(id, window.setTimeout(() => {
+    temporizadores_paneles.delete(id);
+    if (!avanzar_panel_secundario(id, 1)) {
+      paneles_reproduciendo.delete(id);
+      actualizar_estado_panel_secundario(id, {});
+      return;
+    }
+    programar_panel_secundario(id);
+  }, demora));
+}
+
+function alternar_reproduccion_panel_secundario(id: string): void {
+  if (paneles_reproduciendo.delete(id)) {
+    const temporizador = temporizadores_paneles.get(id);
+    if (temporizador !== undefined) window.clearTimeout(temporizador);
+    temporizadores_paneles.delete(id);
+  } else {
+    paneles_reproduciendo.add(id);
+    programar_panel_secundario(id);
+  }
+  actualizar_estado_panel_secundario(id, {});
 }
 
 function guardar_desplazamiento_panel_secundario(id: string, desplazamiento: number): void {
@@ -1133,6 +1248,8 @@ function guardar_desplazamiento_panel_secundario(id: string, desplazamiento: num
     indice_unidad: documento.estado_lectura?.indice_unidad ?? 0,
     desplazamiento: Math.max(0, desplazamiento),
     modo_visual_pdf: documento.estado_lectura?.modo_visual_pdf ?? "texto",
+    modo_lectura: documento.estado_lectura?.modo_lectura ?? "continua",
+    unidad_rsvp: documento.estado_lectura?.unidad_rsvp ?? "frase",
     componentes: documento.estado_lectura?.componentes ?? {
       biblioteca: perfil_actual.componentes.biblioteca,
       inspector: perfil_actual.componentes.inspector,
@@ -1156,18 +1273,32 @@ function cambiar_proporcion_paneles(divisor: number, cambio: number): void {
   control?.setAttribute("aria-valuenow", String(Math.round(sesion_division.proporciones[divisor] ?? 0)));
 }
 
+function enlazar_panel_documento_secundario(panel: HTMLElement): void {
+  const id = panel.dataset.panelDocumento ?? "";
+  const articulo = panel.querySelector<HTMLElement>("article");
+  if (articulo) {
+    articulo.scrollTop = documentos.find((documento) => documento.id === id)?.estado_lectura?.desplazamiento ?? 0;
+    articulo.addEventListener("scroll", () => guardar_desplazamiento_panel_secundario(id, articulo.scrollTop), { passive: true });
+  }
+  panel.querySelector<HTMLSelectElement>("[data-modo-panel]")?.addEventListener("change", (evento) => {
+    actualizar_estado_panel_secundario(id, { modo_lectura: (evento.currentTarget as HTMLSelectElement).value as "continua" | "rsvp", indice_unidad: 0 });
+  });
+  panel.querySelector<HTMLElement>("[data-anterior-panel]")?.addEventListener("click", () => avanzar_panel_secundario(id, -1));
+  panel.querySelector<HTMLElement>("[data-siguiente-panel]")?.addEventListener("click", () => avanzar_panel_secundario(id, 1));
+  panel.querySelector<HTMLElement>("[data-reproducir-panel]")?.addEventListener("click", () => alternar_reproduccion_panel_secundario(id));
+  panel.querySelector<HTMLInputElement>("[data-pagina-panel]")?.addEventListener("change", (evento) => {
+    const disponibles = fragmentos_documento_secundario(id);
+    const pagina = Math.max(1, Math.trunc(Number((evento.currentTarget as HTMLInputElement).value) || 1));
+    actualizar_estado_panel_secundario(id, { pagina, indice_fragmento: indice_inicial_pagina(disponibles, pagina) ?? 0, indice_unidad: 0 });
+  });
+}
+
 function enlazar_paneles_documentos(): void {
   const panel_activo = document.querySelector<HTMLElement>("#panel-documento-activo");
   panel_activo?.addEventListener("scroll", () => guardar_posicion_actual(), { passive: true });
   panel_activo?.addEventListener("wheel", suspender_autoscroll_manual, { passive: true });
   panel_activo?.addEventListener("touchmove", suspender_autoscroll_manual, { passive: true });
-  document.querySelectorAll<HTMLElement>(".panel-documento-secundario").forEach((panel) => {
-    const id = panel.dataset.panelDocumento ?? "";
-    const articulo = panel.querySelector<HTMLElement>("article");
-    if (!articulo) return;
-    articulo.scrollTop = documentos.find((documento) => documento.id === id)?.estado_lectura?.desplazamiento ?? 0;
-    articulo.addEventListener("scroll", () => guardar_desplazamiento_panel_secundario(id, articulo.scrollTop), { passive: true });
-  });
+  document.querySelectorAll<HTMLElement>(".panel-documento-secundario").forEach(enlazar_panel_documento_secundario);
   document.querySelectorAll<HTMLElement>("[data-activar-panel]").forEach((boton) => boton.addEventListener("click", () => {
     const id = boton.dataset.activarPanel;
     const anterior = sesion_pestanas.activa;
@@ -1178,21 +1309,20 @@ function enlazar_paneles_documentos(): void {
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-divisor-panel]").forEach((divisor) => {
     const indice = Number(divisor.dataset.divisorPanel);
-    const disposicion_vertical = es_interfaz_movil() || sesion_division.orientacion === "vertical";
-    divisor.setAttribute("aria-orientation", disposicion_vertical ? "horizontal" : "vertical");
+    divisor.setAttribute("aria-orientation", "vertical");
     divisor.addEventListener("keydown", (evento) => {
-      const disminuir = disposicion_vertical ? evento.key === "ArrowUp" : evento.key === "ArrowLeft";
-      const aumentar = disposicion_vertical ? evento.key === "ArrowDown" : evento.key === "ArrowRight";
+      const disminuir = evento.key === "ArrowLeft";
+      const aumentar = evento.key === "ArrowRight";
       if (disminuir) { evento.preventDefault(); cambiar_proporcion_paneles(indice, -2); }
       if (aumentar) { evento.preventDefault(); cambiar_proporcion_paneles(indice, 2); }
     });
     divisor.addEventListener("pointerdown", (evento) => {
       evento.preventDefault(); divisor.setPointerCapture(evento.pointerId);
-      let posicion_anterior = disposicion_vertical ? evento.clientY : evento.clientX;
+      let posicion_anterior = evento.clientX;
       const contenedor = document.querySelector<HTMLElement>("#paneles-documentos");
       const mover = (movimiento: PointerEvent): void => {
-        const extension = Math.max(1, disposicion_vertical ? contenedor?.clientHeight ?? 1 : contenedor?.clientWidth ?? 1);
-        const posicion = disposicion_vertical ? movimiento.clientY : movimiento.clientX;
+        const extension = Math.max(1, contenedor?.clientWidth ?? 1);
+        const posicion = movimiento.clientX;
         cambiar_proporcion_paneles(indice, ((posicion - posicion_anterior) / extension) * 100);
         posicion_anterior = posicion;
       };
@@ -1225,7 +1355,7 @@ async function renderizar_lector(): Promise<void> {
   principal.classList.toggle("vista-dividida", secundarios.length > 0);
   if (secundarios.length) {
     const paneles = [`<section id="panel-documento-activo" class="panel-documento-lectura" data-panel-documento="${escapar_html(documento_actual.id)}" style="--proporcion-panel:${sesion_division.proporciones[0]}">${lector_activo}</section>`, ...secundarios.map((id, indice) => crear_panel_documento_secundario(id, sesion_division.proporciones[indice + 1] ?? 0))];
-    principal.innerHTML = `<section id="paneles-documentos" class="paneles-documentos" data-orientacion="${sesion_division.orientacion}">${paneles.map((panel, indice) => `${panel}${indice < paneles.length - 1 ? `<button type="button" class="divisor-panel-documento" data-divisor-panel="${indice}" role="separator" aria-orientation="${es_interfaz_movil() || sesion_division.orientacion === "vertical" ? "horizontal" : "vertical"}" aria-label="Redimensionar documentos" aria-valuemin="15" aria-valuemax="85" aria-valuenow="${Math.round(sesion_division.proporciones[indice] ?? 0)}"></button>` : ""}`).join("")}</section>`;
+    principal.innerHTML = `<section id="paneles-documentos" class="paneles-documentos cantidad-${cantidad_paneles}">${paneles.map((panel, indice) => `${panel}${indice < paneles.length - 1 ? `<button type="button" class="divisor-panel-documento" data-divisor-panel="${indice}" role="separator" aria-orientation="vertical" aria-label="Redimensionar documentos" aria-valuemin="15" aria-valuemax="85" aria-valuenow="${Math.round(sesion_division.proporciones[indice] ?? 0)}"></button>` : ""}`).join("")}</section>`;
   } else principal.innerHTML = lector_activo;
   enlazar_paneles_documentos();
   enlazar_eventos_visor_pdf();
@@ -1347,7 +1477,8 @@ function cancelar_seguimiento_pdf(): void {
 
 function preparar_seguimiento_pdf(indice = indice_fragmento): string[] {
   cancelar_seguimiento_pdf();
-  const unidades = fragmentos[indice]?.visible.trim().split(/\s+/u).filter(Boolean) ?? [];
+  const fragmento = fragmentos[indice];
+  const unidades = fragmento ? unidades_fragmento_lectura(fragmento).map(({ texto }) => texto) : [];
   indice_fragmento_seguimiento_pdf = indice;
   unidades_seguimiento_pdf = unidades;
   indice_unidad_pdf = 0;
@@ -1366,7 +1497,7 @@ function actualizar_seguimiento_pdf_por_progreso(progreso: number): void {
     return objetivo < acumulado;
   });
   indice_unidad_pdf = indice < 0 ? Math.max(0, pesos.length - 1) : indice;
-  if (es_vista_pdf_original()) resaltar_fragmento_pdf();
+  if (es_vista_pdf_original()) { resaltar_fragmento_pdf(); sincronizar_pagina_pdf_con_fragmento(); }
 }
 
 function programar_plan_seguimiento_pdf(plan: PasoRsvp[], posicion: number, indice_seguido: number, generacion: number): void {
@@ -1377,6 +1508,7 @@ function programar_plan_seguimiento_pdf(plan: PasoRsvp[], posicion: number, indi
     if (generacion !== generacion_voz || !reproduciendo || indice_fragmento !== indice_seguido) return;
     indice_unidad_pdf = paso.indice;
     resaltar_fragmento_pdf();
+    sincronizar_pagina_pdf_con_fragmento();
     programar_plan_seguimiento_pdf(plan, posicion + 1, indice_seguido, generacion);
   }, Math.max(0, paso.inicio_ms - anterior.inicio_ms));
 }
@@ -1488,7 +1620,7 @@ function obtener_unidades_rsvp(): string[] {
   if (fragmento.tipo === "matematica") return [fragmento.visible.replace(/^\$\$|\$\$$/g, "")];
   const visible = fragmento.visible.trim();
   if (perfil_actual.unidad_rsvp === "frase") return visible ? [visible] : [];
-  return visible.split(/\s+/u).filter(Boolean);
+  return unidades_fragmento_lectura(fragmento).map(({ texto }) => texto);
 }
 
 function actualizar_visor_rsvp(): void {
@@ -1680,6 +1812,8 @@ function crear_estado_lectura_actual(): EstadoLecturaDocumento {
     indice_unidad: Math.max(0, perfil_actual.modo_lectura === "rsvp" ? indice_unidad_rsvp : indice_unidad_pdf),
     desplazamiento: Math.max(0, contenedor?.scrollTop ?? 0),
     modo_visual_pdf,
+    modo_lectura: perfil_actual.modo_lectura,
+    unidad_rsvp: perfil_actual.unidad_rsvp,
     componentes: {
       biblioteca: perfil_actual.componentes.biblioteca,
       inspector: perfil_actual.componentes.inspector,
@@ -1707,8 +1841,13 @@ function aplicar_estado_lectura(documento: DocumentoBiblioteca): void {
   indice_unidad_pdf = indice_unidad_rsvp;
   modo_visual_pdf = documento.formato === "PDF" && (estado?.modo_visual_pdf === "original" || estado?.modo_visual_pdf === "doble") ? estado.modo_visual_pdf : "texto";
   desplazamiento_pendiente = estado ? Math.max(0, estado.desplazamiento) : 0;
-  if (estado?.componentes) {
-    perfil_actual = normalizar_perfil({ ...perfil_actual, componentes: combinar_componentes_documento(perfil_actual.componentes, estado.componentes) });
+  if (estado) {
+    perfil_actual = normalizar_perfil({
+      ...perfil_actual,
+      modo_lectura: estado.modo_lectura ?? perfil_actual.modo_lectura,
+      unidad_rsvp: estado.unidad_rsvp ?? perfil_actual.unidad_rsvp,
+      componentes: combinar_componentes_documento(perfil_actual.componentes, estado.componentes),
+    });
     aplicar_perfil();
   }
 }
@@ -1815,11 +1954,33 @@ function cerrar_menus_contextuales(): void {
   document.querySelector<HTMLElement>("#menu-contextual")?.setAttribute("hidden", "");
 }
 
+function obtener_area_visible(): { izquierda: number; superior: number; derecha: number; inferior: number } {
+  const viewport = window.visualViewport;
+  const izquierda = viewport?.offsetLeft ?? 0;
+  const superior = viewport?.offsetTop ?? 0;
+  const estilos_raiz = getComputedStyle(document.documentElement);
+  const margen = (propiedad: string): number => Number.parseFloat(estilos_raiz.getPropertyValue(propiedad)) || 0;
+  return {
+    izquierda: izquierda + margen("--area-segura-izquierda"),
+    superior: superior + margen("--area-segura-superior"),
+    derecha: izquierda + (viewport?.width ?? window.innerWidth) - margen("--area-segura-derecha"),
+    inferior: superior + (viewport?.height ?? window.innerHeight) - margen("--area-segura-inferior"),
+  };
+}
+
 function posicionar_superposicion(menu: HTMLElement, ancla: { izquierda: number; superior: number; derecha: number; inferior: number }): void {
+  anclas_superposiciones.set(menu, ancla);
   const rectangulo = menu.getBoundingClientRect();
-  const posicion = calcular_posicion_superpuesta(ancla, { ancho: rectangulo.width, alto: rectangulo.height }, { ancho: window.innerWidth, alto: window.innerHeight });
+  const posicion = calcular_posicion_superpuesta(ancla, { ancho: rectangulo.width, alto: rectangulo.height }, obtener_area_visible());
   menu.style.left = `${posicion.izquierda}px`;
   menu.style.top = `${posicion.superior}px`;
+}
+
+function reposicionar_superposiciones(): void {
+  document.querySelectorAll<HTMLElement>("#menu-agregar:not([hidden]),#menu-contextual:not([hidden])").forEach((menu) => {
+    const ancla = anclas_superposiciones.get(menu);
+    if (ancla) posicionar_superposicion(menu, ancla);
+  });
 }
 
 function mostrar_menu_contextual(contenido: string, x: number, y: number): HTMLElement | null {
@@ -1842,7 +2003,8 @@ function abrir_menu_documento(id: string, x: number, y: number): void {
   const documento = documentos.find((actual) => actual.id === id);
   if (!documento) return;
   const opciones_carpetas = carpetas.map((carpeta) => `<button data-mover-carpeta="${escapar_html(carpeta.id)}">Mover a ${escapar_html(carpeta.nombre)}</button>`).join("");
-  const menu = mostrar_menu_contextual(`<strong>${escapar_html(documento.titulo)}</strong><button data-accion="editar">Editar metadata</button>${opciones_carpetas}<button data-mover-carpeta="">Sacar de carpeta</button><button class="accion-peligrosa" data-accion="eliminar">Eliminar de biblioteca</button>`, x, y);
+  const menu = mostrar_menu_contextual(`<strong>${escapar_html(documento.titulo)}</strong><button data-accion="renombrar-archivo">Renombrar archivo</button><button data-accion="editar">Editar metadata</button>${opciones_carpetas}<button data-mover-carpeta="">Sacar de carpeta</button><button class="accion-peligrosa" data-accion="eliminar">Eliminar de biblioteca</button>`, x, y);
+  menu?.querySelector("[data-accion='renombrar-archivo']")?.addEventListener("click", () => void renombrar_archivo_biblioteca(id));
   menu?.querySelector("[data-accion='editar']")?.addEventListener("click", () => void editar_metadata_documento(id));
   menu?.querySelector("[data-accion='eliminar']")?.addEventListener("click", () => void eliminar_documento_biblioteca(id));
   menu?.querySelectorAll<HTMLElement>("[data-mover-carpeta]").forEach((boton) => boton.addEventListener("click", () => void mover_documento_a_carpeta(id, boton.dataset.moverCarpeta || null)));
@@ -1930,10 +2092,10 @@ async function alternar_destacado_fragmento(id: string): Promise<void> {
 function abrir_menu_carpeta(id: string, x: number, y: number): void {
   const carpeta = carpetas.find((actual) => actual.id === id);
   if (!carpeta) return;
-  const acciones_sistema = carpeta.ruta ? `<button data-accion="abrir-finder">Abrir en Finder</button><button data-accion="sincronizar">Sincronizar</button>` : "";
+  const acciones_sistema = `<button data-accion="abrir-finder">Abrir en Finder</button><button data-accion="sincronizar">Sincronizar Biblioteca</button>`;
   const menu = mostrar_menu_contextual(`<strong>${escapar_html(carpeta.nombre)}</strong>${acciones_sistema}<button data-accion="renombrar">Renombrar</button><button class="accion-peligrosa" data-accion="eliminar">Eliminar carpeta</button>`, x, y);
   menu?.querySelector("[data-accion='abrir-finder']")?.addEventListener("click", () => void abrir_carpeta_en_finder(carpeta));
-  menu?.querySelector("[data-accion='sincronizar']")?.addEventListener("click", () => void ejecutar_importacion(() => sincronizar_carpeta_sistema(carpeta), "No fue posible sincronizar la carpeta"));
+  menu?.querySelector("[data-accion='sincronizar']")?.addEventListener("click", () => void ejecutar_importacion(actualizar_biblioteca_nativa, "No fue posible sincronizar la Biblioteca"));
   menu?.querySelector("[data-accion='renombrar']")?.addEventListener("click", () => void renombrar_carpeta_biblioteca(id));
   menu?.querySelector("[data-accion='eliminar']")?.addEventListener("click", () => void eliminar_carpeta_biblioteca(id));
 }
@@ -1953,12 +2115,13 @@ async function renombrar_carpeta_biblioteca(id: string): Promise<void> {
   const nombre = window.prompt("Nuevo nombre", carpeta?.nombre ?? "")?.trim();
   if (!carpeta || !nombre) return;
   if (isTauri()) await invoke("renombrar_carpeta", { id, nombre });
-  carpetas = carpetas.map((actual) => actual.id === id ? { ...actual, nombre } : actual);
+  if (isTauri()) await actualizar_biblioteca_nativa();
+  else carpetas = carpetas.map((actual) => actual.id === id ? { ...actual, nombre } : actual);
   persistencia.guardarCarpetas(carpetas); cerrar_menus_contextuales(); renderizar_panel_biblioteca();
 }
 
 async function eliminar_carpeta_biblioteca(id: string): Promise<void> {
-  if (!window.confirm("Eliminar carpeta virtual? Los libros seguirán en biblioteca y archivos originales no se borrarán.")) return;
+  if (!window.confirm("Eliminar carpeta vacía de la Biblioteca?")) return;
   if (isTauri()) await invoke("eliminar_carpeta", { id });
   carpetas = carpetas.filter((carpeta) => carpeta.id !== id);
   documentos = documentos.map((documento) => documento.carpeta_id === id ? { ...documento, carpeta_id: null } : documento);
@@ -1968,8 +2131,18 @@ async function eliminar_carpeta_biblioteca(id: string): Promise<void> {
 
 async function mover_documento_a_carpeta(id: string, carpeta_id: string | null): Promise<void> {
   if (!id) return;
-  if (isTauri()) await invoke("mover_documento", { idDocumento: id, carpetaId: carpeta_id });
-  documentos = documentos.map((documento) => documento.id === id ? { ...documento, carpeta_id } : documento);
+  const movido = isTauri() ? convertir_documento_nativo(await invoke<Omit<DocumentoBiblioteca, "etiquetas">>("mover_documento", { idDocumento: id, carpetaId: carpeta_id })) : null;
+  documentos = documentos.map((documento) => documento.id === id ? movido ?? { ...documento, carpeta_id } : documento);
+  persistencia.guardarDocumentos(documentos); cerrar_menus_contextuales(); renderizar_panel_biblioteca(); renderizar_biblioteca();
+}
+
+async function renombrar_archivo_biblioteca(id: string): Promise<void> {
+  const documento = documentos.find((actual) => actual.id === id);
+  if (!documento || id === "demostracion") return;
+  const nombre = window.prompt("Nuevo nombre de archivo", documento.titulo)?.trim();
+  if (!nombre) return;
+  const renombrado = isTauri() ? convertir_documento_nativo(await invoke<Omit<DocumentoBiblioteca, "etiquetas">>("renombrar_documento", { id, nombre })) : { ...documento, titulo: nombre };
+  documentos = documentos.map((actual) => actual.id === id ? renombrado : actual);
   persistencia.guardarDocumentos(documentos); cerrar_menus_contextuales(); renderizar_panel_biblioteca(); renderizar_biblioteca();
 }
 
@@ -1985,7 +2158,7 @@ async function editar_metadata_documento(id: string): Promise<void> {
 }
 
 async function eliminar_documento_biblioteca(id: string): Promise<void> {
-  if (id === "demostracion" || !window.confirm("Eliminar de biblioteca? Archivo original permanecerá intacto.")) return;
+  if (id === "demostracion" || !window.confirm("Eliminar la copia de la Biblioteca? El archivo importado original permanecerá intacto.")) return;
   if (isTauri()) await invoke("eliminar_documento", { id });
   documentos = documentos.filter((documento) => documento.id !== id);
   sesion_pestanas = cerrar_pestana(sesion_pestanas, id);
@@ -2004,7 +2177,7 @@ async function ordenar_documento(id_movido: string, id_destino: string): Promise
 
 function cambiar_vista(vista: "biblioteca" | "lector"): void {
   vista_actual = vista;
-  if (vista === "biblioteca") { generacion_renderizado += 1; documento_renderizando = false; void cerrar_visor_pdf(); }
+  if (vista === "biblioteca") { generacion_renderizado += 1; documento_renderizando = false; void cerrar_visor_pdf(); if (isTauri()) void actualizar_biblioteca_nativa(); }
   detener_voz();
   document.querySelectorAll<HTMLElement>("[data-vista]").forEach((elemento) => elemento.classList.toggle("activa", elemento.dataset.vista === vista));
   const buscador = document.querySelector<HTMLInputElement>("#busqueda-global");
@@ -2014,6 +2187,7 @@ function cambiar_vista(vista: "biblioteca" | "lector"): void {
   }
   consulta_global = ""; resultados_busqueda_lector = []; posicion_resultado_busqueda = -1;
   if (vista === "biblioteca") renderizar_biblioteca(""); else void renderizar_lector();
+  renderizar_panel_izquierdo();
   actualizar_indicador_busqueda();
   actualizar_controles();
   renderizar_pestanas_documentos();
@@ -2027,9 +2201,7 @@ async function importar_documentos(lista_archivos: FileList | null): Promise<voi
   if (!lista_archivos) return;
   const extractores = await import("./infra/extractores.ts");
   const archivos = [...lista_archivos].filter((archivo) => /\.(?:pdf|epub|md|markdown)$/i.test(archivo.name));
-  const raiz_sistema = archivos.find(({ webkitRelativePath }) => webkitRelativePath)?.webkitRelativePath.split("/")[0];
-  const carpeta_importada = raiz_sistema ? await crear_carpeta_biblioteca(raiz_sistema, false) : null;
-  const carpeta_id = carpeta_importada?.id ?? carpeta_destino_actual();
+  const carpeta_id = carpeta_destino_actual();
   for (const [indice, archivo] of archivos.entries()) {
     mostrar_carga(archivo.name, indice, archivos.length, "Extrayendo contenido local");
     const extension = archivo.name.split(".").pop()?.toUpperCase();
@@ -2050,7 +2222,6 @@ async function importar_documentos(lista_archivos: FileList | null): Promise<voi
     });
   }
   persistencia.guardarDocumentos(documentos);
-  if (carpeta_importada) filtro_biblioteca = { tipo: "carpeta", carpeta_id: carpeta_importada.id };
   renderizar_panel_biblioteca();
   renderizar_biblioteca();
   finalizar_carga(archivos.length);
@@ -2060,13 +2231,13 @@ function convertir_documento_nativo(documento: Omit<DocumentoBiblioteca, "etique
   return { ...documento, etiquetas: [] };
 }
 
-async function cargar_biblioteca_nativa(): Promise<void> {
+async function actualizar_biblioteca_nativa(): Promise<void> {
   if (!isTauri()) return;
-  const carpetas_nativas = await invoke<CarpetaBiblioteca[]>("listar_carpetas");
-  await Promise.all(carpetas_nativas.filter(({ ruta }) => Boolean(ruta)).map(async ({ id }) => {
-    try { await invoke("sincronizar_carpeta_sistema", { id }); } catch { return; }
-  }));
-  const documentos_nativos = await invoke<Array<Omit<DocumentoBiblioteca, "etiquetas">>>("listar_documentos");
+  await invoke("sincronizar_biblioteca");
+  const [carpetas_nativas, documentos_nativos] = await Promise.all([
+    invoke<CarpetaBiblioteca[]>("listar_carpetas"),
+    invoke<Array<Omit<DocumentoBiblioteca, "etiquetas">>>("listar_documentos"),
+  ]);
   documentos = [DOCUMENTO_DEMOSTRACION, ...documentos_nativos.map(convertir_documento_nativo)];
   carpetas = carpetas_nativas;
   persistencia.guardarDocumentos(documentos);
@@ -2076,6 +2247,10 @@ async function cargar_biblioteca_nativa(): Promise<void> {
   persistencia.guardarPestanas(sesion_pestanas);
   renderizar_pestanas_documentos();
   if (vista_actual === "biblioteca") renderizar_biblioteca();
+}
+
+async function cargar_biblioteca_nativa(): Promise<void> {
+  await actualizar_biblioteca_nativa();
   if (sesion_pestanas.activa) void abrir_documento(sesion_pestanas.activa);
 }
 
@@ -2089,10 +2264,9 @@ async function importar_rutas_nativas(rutas: string[], carpeta_id: string | null
   for (const [indice, ruta] of rutas.entries()) {
     mostrar_carga(ruta.split(/[\\/]/).pop() ?? ruta, indice, rutas.length, "Extrayendo contenido local");
     const documento_nativo = await invoke<Omit<DocumentoBiblioteca, "etiquetas">>("importar_documento", { ruta });
-    const documento = convertir_documento_nativo(documento_nativo);
-    const documento_organizado = { ...documento, carpeta_id };
+    let documento_organizado = convertir_documento_nativo(documento_nativo);
+    if (carpeta_id) documento_organizado = convertir_documento_nativo(await invoke<Omit<DocumentoBiblioteca, "etiquetas">>("mover_documento", { idDocumento: documento_organizado.id, carpetaId: carpeta_id }));
     documentos = agregar_documento(documentos, documento_organizado);
-    if (carpeta_id) await invoke("mover_documento", { idDocumento: documento.id, carpetaId: carpeta_id });
     await procesar_documento_nativo(documento_organizado);
   }
   persistencia.guardarDocumentos(documentos);
@@ -2118,35 +2292,15 @@ async function inicializar_apertura_archivos_nativa(): Promise<void> {
   encolar_archivos_abiertos(iniciales);
 }
 
-async function importar_carpeta_nativa(): Promise<void> {
-  const seleccion = await open({ directory: true, multiple: false, title: "Añadir carpeta a biblioteca" });
-  if (!seleccion) return;
-  mostrar_carga(seleccion.split(/[\\/]/).pop() ?? seleccion, 0, 0, "Buscando PDF, EPUB y Markdown");
-  const carpeta = await invoke<CarpetaBiblioteca>("vincular_carpeta_sistema", { ruta: seleccion });
-  const sincronizados = await invoke<Array<Omit<DocumentoBiblioteca, "etiquetas">>>("sincronizar_carpeta_sistema", { id: carpeta.id });
-  filtro_biblioteca = { tipo: "carpeta", carpeta_id: carpeta.id };
-  await cargar_biblioteca_nativa();
-  finalizar_carga(sincronizados.length);
+async function abrir_biblioteca_en_finder(): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("abrir_biblioteca_en_finder");
 }
 
-function carpeta_sistema_activa(): CarpetaBiblioteca | undefined {
-  const id_activa = filtro_biblioteca.tipo === "carpeta" ? filtro_biblioteca.carpeta_id : null;
-  const activa = id_activa ? carpetas.find(({ id }) => id === id_activa) : undefined;
-  return activa?.ruta ? activa : carpetas.find(({ ruta }) => Boolean(ruta));
-}
-
-async function abrir_carpeta_en_finder(carpeta = carpeta_sistema_activa()): Promise<void> {
-  if (!carpeta?.ruta || !isTauri()) return;
+async function abrir_carpeta_en_finder(carpeta: CarpetaBiblioteca): Promise<void> {
+  if (!carpeta.ruta || !isTauri()) return;
   await invoke("abrir_carpeta_en_finder", { id: carpeta.id });
   cerrar_menus_contextuales();
-}
-
-async function sincronizar_carpeta_sistema(carpeta: CarpetaBiblioteca): Promise<void> {
-  if (!carpeta.ruta || !isTauri()) return;
-  mostrar_carga(carpeta.nombre, 0, 0, "Sincronizando carpeta del sistema");
-  const sincronizados = await invoke<Array<Omit<DocumentoBiblioteca, "etiquetas">>>("sincronizar_carpeta_sistema", { id: carpeta.id });
-  await cargar_biblioteca_nativa();
-  finalizar_carga(sincronizados.length);
 }
 
 function mostrar_carga(nombre: string, indice: number, total: number, etapa: string): void {
@@ -2210,7 +2364,6 @@ async function inicializar_sincronizacion_perfil(): Promise<void> {
   await Promise.all([
     listen<PerfilLecturaParcial>("perfil-actualizado", ({ payload }) => actualizar_perfil(payload, false)),
     listen<boolean>("informes-error-actualizados", ({ payload }) => actualizar_informes_error(payload, false)),
-    listen<"horizontal" | "vertical">("mosaico-orientacion", ({ payload }) => establecer_orientacion_mosaico(payload)),
     listen("asociaciones-archivo-actualizadas", () => void actualizar_estado_asociaciones_archivo()),
   ]);
 }
@@ -2350,7 +2503,7 @@ function sincronizar_campos_perfil(): void {
 function crear_controles_interfaz(): string {
   const componentes: Array<[keyof PerfilLectura["componentes"], string]> = [
     ["biblioteca", "Biblioteca"],
-    ["inspector", "Libreta y configuración"],
+    ["inspector", "Libreta"],
     ["barra_superior", "Barra superior"],
     ["pestanas", "Pestañas"],
     ["controles", "Controles de lectura"],
@@ -2533,13 +2686,12 @@ function montar_aplicacion(): void {
   const aplicacion = document.querySelector<HTMLElement>("#app");
   if (!aplicacion) return;
   document.body.classList.toggle("ventana-preferencias", ES_VENTANA_PREFERENCIAS);
-  if (ES_VENTANA_PREFERENCIAS) pestana_derecha = "perfil";
   aplicacion.innerHTML = `<div class="aplicacion"><header class="barra-superior">
     <nav class="pestanas" aria-label="Documentos abiertos"><button class="pestana activa" data-vista="biblioteca">Biblioteca</button><span id="pestanas-documentos" class="pestanas-documentos" role="tablist"></span></nav>
-    <div class="acciones-superiores"><button id="alternar-orientacion-mosaico" class="boton boton-mosaico" type="button" aria-label="Cambiar orientación del mosaico" title="Cambiar orientación del mosaico" hidden>▥</button><button id="modo-enfoque" class="boton">Modo lectura</button><input id="archivo" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" multiple><input id="carpeta" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" webkitdirectory multiple></div><div class="busqueda-global" role="search" aria-label="Buscar en la vista actual" hidden><input id="busqueda-global" type="search" placeholder="Buscar" aria-label="Texto que buscar"><span id="estado-busqueda-global" aria-live="polite"></span><button id="busqueda-anterior" aria-label="Resultado anterior">↑</button><button id="busqueda-siguiente" aria-label="Resultado siguiente">↓</button><button id="cerrar-busqueda-global" aria-label="Cerrar búsqueda">×</button></div></header>
-    <div class="contenido"><aside id="panel-biblioteca" class="panel"><button id="alternar-panel-biblioteca" class="flecha-panel flecha-panel-izquierda" aria-label="Ocultar biblioteca">‹</button><div class="panel-contenido"><div class="pestanas-panel"><button class="activo" data-pestana-izquierda="biblioteca">Biblioteca</button><button data-pestana-izquierda="indice">Índice</button></div><div id="contenido-biblioteca"><section class="panel-seccion"><div class="encabezado-panel"><h2 class="panel-titulo">Organización</h2><button id="abrir-carpeta-finder" class="agregar-biblioteca" aria-label="Abrir carpeta en Finder" title="Abrir carpeta en Finder">▱</button></div><nav id="navegacion-biblioteca" class="navegacion"></nav></section>
+    <div class="acciones-superiores"><span id="estado-mosaico" class="estado-mosaico" role="status" aria-live="polite"></span><button id="modo-enfoque" class="boton">Modo lectura</button><input id="archivo" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" multiple></div><div class="busqueda-global" role="search" aria-label="Buscar en la vista actual" hidden><input id="busqueda-global" type="search" placeholder="Buscar" aria-label="Texto que buscar"><span id="estado-busqueda-global" aria-live="polite"></span><button id="busqueda-anterior" aria-label="Resultado anterior">↑</button><button id="busqueda-siguiente" aria-label="Resultado siguiente">↓</button><button id="cerrar-busqueda-global" aria-label="Cerrar búsqueda">×</button></div></header>
+    <div class="contenido"><aside id="panel-biblioteca" class="panel" aria-label="Biblioteca"><button id="alternar-panel-biblioteca" class="flecha-panel flecha-panel-izquierda" aria-label="Ocultar biblioteca">‹</button><div class="panel-contenido"><header class="cabecera-panel-contextual"><h2 id="titulo-panel-izquierdo">Biblioteca</h2></header><div id="contenido-biblioteca"><section class="panel-seccion"><div class="encabezado-panel"><h2 class="panel-titulo">Organización</h2><button id="abrir-carpeta-finder" class="agregar-biblioteca" aria-label="Mostrar biblioteca en Finder" title="Mostrar biblioteca en Finder"><svg class="icono-carpeta-finder" aria-hidden="true" viewBox="0 0 24 24"><path d="M3.5 7.5h6l2-2h9v13h-17z"/></svg></button></div><nav id="navegacion-biblioteca" class="navegacion"></nav></section>
     <section class="panel-seccion"><h2 class="panel-titulo">Carpetas</h2><nav id="carpetas-biblioteca" class="navegacion"></nav></section></div><section id="contenido-indice" class="panel-seccion" hidden></section>
-    </div></aside><section id="vista-principal" class="vista-principal"></section><aside id="panel-inspector" class="panel panel-derecho" aria-label="Libreta y configuración"><button id="alternar-panel-inspector" class="flecha-panel flecha-panel-derecha" aria-label="Ocultar panel lateral">›</button><div class="panel-contenido"><header class="cabecera-preferencias"><h1 id="titulo-preferencias" tabindex="-1">Configuración</h1><p>Preferencias locales de Carlector</p></header><div class="pestanas-panel"><button class="activo" data-pestana-derecha="fragmentos">Libreta</button><button data-pestana-derecha="perfil">Configuración</button></div><div id="contenido-perfil" hidden><details id="configuracion-interfaz" class="panel-seccion grupo-configuracion" open><summary>Interfaz</summary><div class="contenido-grupo-configuracion">
+    </div></aside><section id="vista-principal" class="vista-principal"></section><aside id="panel-inspector" class="panel panel-derecho" aria-label="${ES_VENTANA_PREFERENCIAS ? "Configuración" : "Libreta"}"><button id="alternar-panel-inspector" class="flecha-panel flecha-panel-derecha" aria-label="Ocultar Libreta">›</button><div class="panel-contenido"><header class="cabecera-preferencias"><h1 id="titulo-preferencias" tabindex="-1">Configuración</h1><p>Preferencias locales de Carlector</p></header><div id="contenido-perfil" hidden><details id="configuracion-interfaz" class="panel-seccion grupo-configuracion" open><summary>Interfaz</summary><div class="contenido-grupo-configuracion">
     <div class="lista-visibilidad-interfaz" aria-label="Elementos visibles">${crear_controles_interfaz()}</div>
     <fieldset class="dimensiones-interfaz"><legend>Dimensiones</legend>
     <div class="campo"><div class="campo-linea"><label for="ancho-biblioteca">Ancho Biblioteca</label><output id="valor-ancho-biblioteca"></output></div><input id="ancho-biblioteca" data-disposicion-interfaz="ancho_biblioteca" type="range" min="180" max="420" step="1"></div>
@@ -2568,10 +2720,24 @@ function montar_aplicacion(): void {
     <details class="menu-omisiones-voz"><summary>Contenido en voz</summary><div class="contenido-menu-omisiones"><div class="campo"><label for="matematica">Matemática en voz</label><select id="matematica"><option value="leer">Leer</option><option value="omitir">Omitir</option><option value="indicar">Decir «ecuación»</option></select></div><fieldset class="lista-omisiones-voz"><legend>Omitir al leer</legend><label><input id="saltar-citas" type="checkbox"> Citas bibliográficas</label><label><input type="checkbox" checked disabled> Símbolos ilegibles</label></fieldset></div></details>
     <div class="campo campo-linea"><label for="auto-scroll">Auto-scroll</label><input id="auto-scroll" class="interruptor" type="checkbox"></div></div></details>
     <details id="configuracion-voz" class="panel-seccion grupo-configuracion" open><summary><span>Voz</span><button id="abrir-repositorios-voz" class="boton-biblioteca-temas" aria-label="Administrar repositorios de voz" title="Repositorios de voz">⬡</button></summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea campo-voz-habilitada"><label for="voz-habilitada">Voz habilitada</label><input id="voz-habilitada" class="interruptor" type="checkbox"></div><div class="campo"><label for="motor-voz">Motor</label><select id="motor-voz"><option value="sistema">TTS del sistema · experimental</option><option value="kokoro_onnx" ${kokoro_instalado ? "" : "disabled"}>Kokoro ONNX${kokoro_instalado ? " · verificado" : " · no instalado"}</option></select></div><div class="campo" data-solo-kokoro><label for="idioma-voz">Paquete de idioma</label><select id="idioma-voz"><option value="es">Español genérico</option><option value="en-us">Inglés · Estados Unidos</option><option value="en-gb">Inglés · Reino Unido</option></select></div><div class="campo" data-solo-kokoro><label for="voz-base">Voz compatible</label><select id="voz-base"></select></div><div class="control-velocidad-voz" data-velocidad-voz-individual><label for="velocidad">Velocidad de reproducción</label><div class="velocidad-linea"><button id="velocidad-menos" class="velocidad-ajuste" aria-label="Reducir velocidad en 0.1">−</button><input id="velocidad" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.velocidad}"><button id="velocidad-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad en 0.1">+</button><span id="valor-velocidad"></span></div><div class="velocidades-rapidas"><button data-velocidad="1">1×</button><button data-velocidad="1.5">1.5×</button><button data-velocidad="2">2×</button></div></div><p class="ayuda-campo" data-solo-kokoro>Idioma y voz se sincronizan automáticamente para evitar combinaciones incompatibles.</p></div></details><details id="configuracion-avanzada" class="panel-seccion grupo-configuracion"><summary>Avanzado</summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea"><label for="mostrar-informes-error">Mostrar informes de error</label><input id="mostrar-informes-error" class="interruptor" type="checkbox" ${informes_error_habilitados ? "checked" : ""}></div><fieldset class="atajos-configurables"><legend>Atajos de teclado</legend>${Object.entries(ETIQUETAS_ATAJOS).map(([accion, etiqueta]) => `<label for="atajo-${accion}">${etiqueta}</label><input id="atajo-${accion}" data-atajo="${accion}" value="${describir_atajo(perfil_actual.atajos[accion as AccionAtajo])}" readonly aria-describedby="ayuda-atajos estado-atajos">`).join("")}<p id="ayuda-atajos">Selecciona un campo y pulsa la combinación nueva. Escape cancela.</p><p id="estado-atajos" role="status"></p><button id="restaurar-atajos" class="boton" type="button">Restaurar atajos</button></fieldset></div></details></div><div id="ubicacion-libreta-panel"><section id="contenido-fragmentos" class="panel-seccion"></section></div></div></aside></div>
-    <section id="zonas-acoplamiento" class="zonas-acoplamiento" aria-label="Zonas de mosaico" hidden><p id="estado-acoplamiento" role="status" aria-live="polite"></p><button class="zona-acoplamiento zona-izquierda" type="button" data-zona-acoplamiento="izquierda">Izquierda</button><button class="zona-acoplamiento zona-derecha" type="button" data-zona-acoplamiento="derecha">Derecha</button><button class="zona-acoplamiento zona-arriba" type="button" data-zona-acoplamiento="arriba">Arriba</button><button class="zona-acoplamiento zona-abajo" type="button" data-zona-acoplamiento="abajo">Abajo</button></section>
-    <div id="menu-agregar" class="menu-agregar" hidden><button id="anadir-archivo">Añadir archivo</button><button id="anadir-carpeta">Añadir carpeta del sistema</button><button id="crear-carpeta">Crear carpeta virtual</button></div><div id="menu-contextual" class="menu-agregar menu-contextual" hidden></div><section id="biblioteca-temas" class="modal-temas" hidden><div class="dialogo-temas"><header><div><h2>Biblioteca de temas</h2><p>Paletas locales para lectura e interfaz</p></div><button id="cerrar-biblioteca-temas" aria-label="Cerrar">×</button></header><div id="lista-biblioteca-temas" class="lista-biblioteca-temas"></div><footer><button id="guardar-tema-actual" class="boton primario">Guardar tema actual</button></footer></div></section><section id="repositorios-voz" class="modal-temas" hidden><div class="dialogo-temas dialogo-repositorios"><header><h2>Repositorios de voz</h2><button id="cerrar-repositorios-voz" aria-label="Cerrar">×</button></header><div id="lista-repositorios-voz" class="lista-repositorios-voz"></div><footer><button id="actualizar-estado-voz" class="boton">Comprobar estado</button></footer></div></section>
-    <section id="libreta-flotante" class="libreta-flotante" aria-labelledby="titulo-libreta-flotante" hidden><header id="asa-libreta-flotante"><strong id="titulo-libreta-flotante">Libreta</strong><button id="cerrar-libreta-flotante" aria-label="Cerrar Libreta flotante">×</button></header><div id="contenido-libreta-flotante" class="contenido-libreta-flotante"></div></section><section id="informador-error" class="informador-error" role="alertdialog" aria-labelledby="error-contexto" aria-describedby="error-detalle" hidden><div><header><strong id="error-contexto">Error de Carlector</strong><button id="cerrar-informador-error" aria-label="Cerrar">×</button></header><p id="error-detalle"></p><small id="error-fecha"></small><footer><label><input id="no-mostrar-errores" type="checkbox"> No volver a mostrar</label><button id="aceptar-informador-error" class="boton primario">Cerrar</button></footer></div></section><section id="carga-importacion" class="carga-importacion" role="status" aria-live="polite" hidden><strong>Cargando biblioteca</strong><span id="carga-nombre"></span><progress id="carga-progreso" max="100"></progress><small id="carga-estado"></small></section><button id="abrir-libreta-flotante" type="button" aria-label="Abrir Libreta flotante" aria-expanded="false" title="Abrir Libreta flotante">↗</button><button id="salir-modo-enfoque" type="button" aria-label="Salir del modo lectura">×</button>
+    <div id="menu-agregar" class="menu-agregar" hidden><button id="anadir-archivo">Añadir archivo</button><button id="crear-carpeta">Crear carpeta</button></div><div id="menu-contextual" class="menu-agregar menu-contextual" hidden></div><section id="biblioteca-temas" class="modal-temas" hidden><div class="dialogo-temas"><header><div><h2>Biblioteca de temas</h2><p>Paletas locales para lectura e interfaz</p></div><button id="cerrar-biblioteca-temas" aria-label="Cerrar">×</button></header><div id="lista-biblioteca-temas" class="lista-biblioteca-temas"></div><footer><button id="guardar-tema-actual" class="boton primario">Guardar tema actual</button></footer></div></section><section id="repositorios-voz" class="modal-temas" hidden><div class="dialogo-temas dialogo-repositorios"><header><h2>Repositorios de voz</h2><button id="cerrar-repositorios-voz" aria-label="Cerrar">×</button></header><div id="lista-repositorios-voz" class="lista-repositorios-voz"></div><footer><button id="actualizar-estado-voz" class="boton">Comprobar estado</button></footer></div></section>
+    <section id="libreta-flotante" class="libreta-flotante" aria-labelledby="titulo-libreta-flotante" hidden><header id="asa-libreta-flotante"><strong id="titulo-libreta-flotante">Libreta</strong><button class="boton exportar-libreta-pdf" data-exportar-libreta-pdf type="button" disabled>Exportar PDF…</button><button id="cerrar-libreta-flotante" aria-label="Cerrar Libreta flotante">×</button></header><div id="contenido-libreta-flotante" class="contenido-libreta-flotante"></div><button id="asa-redimension-libreta" class="asa-redimension-libreta" type="button" aria-label="Ajustar tamaño de Libreta con arrastre o flechas" title="Arrastra para ajustar tamaño">◢</button></section><section id="informador-error" class="informador-error" role="alertdialog" aria-labelledby="error-contexto" aria-describedby="error-detalle" hidden><div><header><strong id="error-contexto">Error de Carlector</strong><button id="cerrar-informador-error" aria-label="Cerrar">×</button></header><p id="error-detalle"></p><small id="error-fecha"></small><footer><label><input id="no-mostrar-errores" type="checkbox"> No volver a mostrar</label><button id="aceptar-informador-error" class="boton primario">Cerrar</button></footer></div></section><section id="carga-importacion" class="carga-importacion" role="status" aria-live="polite" hidden><strong>Cargando biblioteca</strong><span id="carga-nombre"></span><progress id="carga-progreso" max="100"></progress><small id="carga-estado"></small></section><button id="salir-modo-enfoque" type="button" aria-label="Salir del modo lectura">×</button>
     <footer class="control-inferior"><div class="control-documento"><strong id="documento-actual"></strong></div><div class="reproductor"><button id="anterior" class="boton-icono" aria-label="Fragmento anterior">←</button><button id="reproducir" class="reproducir" aria-label="Reproducir" title="Reproducir o pausar · Space">▶</button><button id="siguiente" class="boton-icono" aria-label="Fragmento siguiente">→</button></div><div class="control-velocidad" data-velocidad-maestra><div class="velocidad-linea"><button id="ritmo-inferior-menos" class="velocidad-ajuste" aria-label="Reducir ritmo general en 0.1">−</button><input id="ritmo-general-inferior" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.ritmo_general}"><button id="ritmo-inferior-mas" class="velocidad-ajuste" aria-label="Aumentar ritmo general en 0.1">+</button><span data-valor-ritmo-general></span></div><div class="velocidades-rapidas"><button data-ritmo-general="1">1×</button><button data-ritmo-general="1.5">1.5×</button><button data-ritmo-general="2">2×</button></div></div><div class="control-velocidad" data-velocidad-visual-inferior><div class="velocidad-linea"><button id="palabras-inferior-menos" class="velocidad-ajuste" aria-label="Reducir palabras por minuto">−</button><input id="palabras-minuto-inferior" type="range" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto}"><button id="palabras-inferior-mas" class="velocidad-ajuste" aria-label="Aumentar palabras por minuto">+</button><span data-valor-palabras-minuto></span></div><div class="velocidades-rapidas"><button data-palabras-minuto="200">200</button><button data-palabras-minuto="300">300</button><button data-palabras-minuto="450">450</button></div></div></footer></div>`;
+  const contenido_perfil = document.querySelector<HTMLElement>("#contenido-perfil");
+  const ubicacion_libreta_panel = document.querySelector<HTMLElement>("#ubicacion-libreta-panel");
+  const cabecera_preferencias = document.querySelector<HTMLElement>(".cabecera-preferencias");
+  const panel_inspector = document.querySelector<HTMLElement>("#panel-inspector");
+  if (ES_VENTANA_PREFERENCIAS) {
+    if (contenido_perfil) contenido_perfil.hidden = false;
+    ubicacion_libreta_panel?.remove();
+    document.querySelector<HTMLElement>("#alternar-panel-inspector")?.remove();
+    panel_inspector?.setAttribute("role", "main");
+    panel_inspector?.setAttribute("aria-labelledby", "titulo-preferencias");
+    panel_inspector?.removeAttribute("aria-label");
+  } else {
+    contenido_perfil?.remove();
+    cabecera_preferencias?.remove();
+  }
   aplicacion.insertAdjacentHTML("beforeend", `<section id="vista-previa-libreta" class="modal-temas vista-previa-libreta" role="dialog" aria-modal="true" aria-labelledby="titulo-vista-previa-libreta" hidden><div class="dialogo-exportacion-libreta"><header class="acciones-vista-previa-libreta"><div><h2 id="titulo-vista-previa-libreta">Vista previa de Libreta</h2><p>En macOS, usa PDF → Guardar como PDF en el diálogo siguiente.</p></div><button id="cerrar-vista-previa-libreta" aria-label="Cerrar vista previa">×</button></header><div id="contenido-exportacion-libreta" class="contenido-exportacion-libreta"></div><footer class="acciones-vista-previa-libreta"><button id="imprimir-libreta-pdf" class="boton primario" type="button">Guardar PDF…</button></footer></div></section>`);
 
   ([["#biblioteca-temas", "Biblioteca de temas"], ["#repositorios-voz", "Repositorios de voz"]] as Array<[string, string]>).forEach(([selector, etiqueta]) => {
@@ -2586,7 +2752,7 @@ function montar_aplicacion(): void {
   document.querySelector("#pestanas-documentos")?.addEventListener("click", (evento) => {
     const objetivo = evento.target instanceof Element ? evento.target : null;
     const dividir = objetivo?.closest<HTMLElement>("[data-dividir-pestana]")?.dataset.dividirPestana;
-    if (dividir) { alternar_pestana_dividida(dividir); return; }
+    if (dividir) { void alternar_pestana_dividida(dividir); return; }
     const cerrar = objetivo?.closest<HTMLElement>("[data-cerrar-pestana]")?.dataset.cerrarPestana;
     if (cerrar) { void cerrar_pestana_documento(cerrar); return; }
     const id = objetivo?.closest<HTMLElement>("[data-pestana-documento]")?.dataset.pestanaDocumento;
@@ -2594,14 +2760,6 @@ function montar_aplicacion(): void {
   });
   document.querySelector("#pestanas-documentos")?.addEventListener("keydown", (evento) => {
     const teclado = evento as KeyboardEvent;
-    const pestana = teclado.target instanceof Element ? teclado.target.closest<HTMLElement>("[data-pestana-documento]") : null;
-    const zonas_teclado: Partial<Record<string, ZonaAcoplamiento>> = { ArrowLeft: "izquierda", ArrowRight: "derecha", ArrowUp: "arriba", ArrowDown: "abajo" };
-    const zona_teclado = zonas_teclado[teclado.key];
-    if (pestana && zona_teclado && teclado.metaKey && teclado.shiftKey) {
-      teclado.preventDefault();
-      aplicar_acoplamiento(pestana.dataset.pestanaDocumento ?? "", zona_teclado);
-      return;
-    }
     if (teclado.key !== "ArrowLeft" && teclado.key !== "ArrowRight") return;
     const pestanas = [...document.querySelectorAll<HTMLButtonElement>("[data-pestana-documento]")];
     const actual = pestanas.indexOf(document.activeElement as HTMLButtonElement);
@@ -2609,38 +2767,6 @@ function montar_aplicacion(): void {
     const siguiente = pestanas[(actual + (teclado.key === "ArrowRight" ? 1 : -1) + pestanas.length) % pestanas.length];
     if (siguiente) { teclado.preventDefault(); siguiente.focus(); void abrir_documento(siguiente.dataset.pestanaDocumento ?? ""); }
   });
-  document.querySelector("#pestanas-documentos")?.addEventListener("dragstart", (evento) => {
-    const arrastre = evento as DragEvent;
-    const pestana = arrastre.target instanceof Element ? arrastre.target.closest<HTMLElement>("[data-pestana-documento]") : null;
-    const id = pestana?.dataset.pestanaDocumento;
-    if (!id || id === sesion_pestanas.activa) { arrastre.preventDefault(); return; }
-    arrastre.dataTransfer?.setData("text/carlector-pestana", id);
-    if (arrastre.dataTransfer) arrastre.dataTransfer.effectAllowed = "move";
-    mostrar_zonas_acoplamiento(id);
-  });
-  document.querySelector("#pestanas-documentos")?.addEventListener("dragend", ocultar_zonas_acoplamiento);
-  document.querySelector("#zonas-acoplamiento")?.addEventListener("dragover", (evento) => {
-    const arrastre = evento as DragEvent;
-    const zona = arrastre.target instanceof Element ? arrastre.target.closest<HTMLElement>("[data-zona-acoplamiento]") : null;
-    if (!zona || !id_pestana_arrastrada) return;
-    arrastre.preventDefault();
-    if (arrastre.dataTransfer) arrastre.dataTransfer.dropEffect = "move";
-    document.querySelectorAll("[data-zona-acoplamiento]").forEach((elemento) => elemento.classList.toggle("activa", elemento === zona));
-    document.querySelector<HTMLElement>("#zonas-acoplamiento")?.classList.toggle("ajuste-manual", arrastre.metaKey);
-  });
-  document.querySelector("#zonas-acoplamiento")?.addEventListener("drop", (evento) => {
-    const arrastre = evento as DragEvent;
-    const zona = arrastre.target instanceof Element ? arrastre.target.closest<HTMLElement>("[data-zona-acoplamiento]")?.dataset.zonaAcoplamiento as ZonaAcoplamiento | undefined : undefined;
-    const id = arrastre.dataTransfer?.getData("text/carlector-pestana") || id_pestana_arrastrada;
-    if (!zona || !id) return;
-    arrastre.preventDefault();
-    aplicar_acoplamiento(id, zona, proporcion_acoplamiento(arrastre, zona));
-  });
-  document.querySelectorAll<HTMLElement>("[data-zona-acoplamiento]").forEach((boton) => boton.addEventListener("click", () => {
-    const zona = boton.dataset.zonaAcoplamiento as ZonaAcoplamiento | undefined;
-    if (zona && id_pestana_arrastrada) aplicar_acoplamiento(id_pestana_arrastrada, zona);
-  }));
-  document.querySelector("#alternar-orientacion-mosaico")?.addEventListener("click", alternar_orientacion_mosaico);
   document.querySelector<HTMLElement>("#vista-principal")?.addEventListener("scroll", () => guardar_posicion_actual(), { passive: true });
   document.querySelector<HTMLElement>("#vista-principal")?.addEventListener("wheel", suspender_autoscroll_manual, { passive: true });
   document.querySelector<HTMLElement>("#vista-principal")?.addEventListener("touchmove", suspender_autoscroll_manual, { passive: true });
@@ -2660,14 +2786,8 @@ function montar_aplicacion(): void {
   document.querySelector("#busqueda-anterior")?.addEventListener("click", () => mover_resultado_busqueda(-1));
   document.querySelector("#busqueda-siguiente")?.addEventListener("click", () => mover_resultado_busqueda(1));
   document.querySelector("#cerrar-busqueda-global")?.addEventListener("click", () => cerrar_busqueda_global());
-  document.querySelectorAll<HTMLElement>("[data-pestana-izquierda]").forEach((boton) => boton.addEventListener("click", () => {
-    pestana_izquierda = boton.dataset.pestanaIzquierda as "biblioteca" | "indice"; renderizar_panel_izquierdo();
-  }));
-  document.querySelectorAll<HTMLElement>("[data-pestana-derecha]").forEach((boton) => boton.addEventListener("click", () => {
-    pestana_derecha = boton.dataset.pestanaDerecha as "perfil" | "fragmentos"; renderizar_panel_fragmentos();
-  }));
   document.querySelector("#abrir-carpeta-finder")?.addEventListener("click", () => {
-    if (isTauri()) void ejecutar_importacion(() => abrir_carpeta_en_finder(), "No fue posible abrir la carpeta en Finder");
+    if (isTauri()) void ejecutar_importacion(abrir_biblioteca_en_finder, "No fue posible abrir la Biblioteca en Finder");
   });
   document.querySelector<HTMLElement>("#contenido-biblioteca")?.addEventListener("contextmenu", (evento) => {
     if (evento.target instanceof Element && evento.target.closest("[data-carpeta]")) return;
@@ -2679,12 +2799,6 @@ function montar_aplicacion(): void {
     if (menu) menu.hidden = true;
     if (isTauri()) void ejecutar_importacion(importar_con_dialogo_nativo, "No fue posible importar el archivo");
     else document.querySelector<HTMLInputElement>("#archivo")?.click();
-  });
-  document.querySelector("#anadir-carpeta")?.addEventListener("click", () => {
-    const menu = document.querySelector<HTMLElement>("#menu-agregar");
-    if (menu) menu.hidden = true;
-    if (isTauri()) void ejecutar_importacion(importar_carpeta_nativa, "No fue posible importar la carpeta");
-    else document.querySelector<HTMLInputElement>("#carpeta")?.click();
   });
   document.querySelector("#crear-carpeta")?.addEventListener("click", () => { document.querySelector<HTMLElement>("#menu-agregar")?.setAttribute("hidden", ""); void crear_carpeta_biblioteca(); });
   document.querySelector("#alternar-panel-biblioteca")?.addEventListener("click", () => actualizar_perfil({ componentes: { biblioteca: !perfil_actual.componentes.biblioteca, ...(es_interfaz_movil() ? { inspector: false } : {}) } }));
@@ -2703,22 +2817,17 @@ function montar_aplicacion(): void {
     if (estado) estado.textContent = "Interfaz restaurada.";
   });
   document.querySelector("#salir-modo-enfoque")?.addEventListener("click", () => actualizar_perfil({ modo_enfoque: false }));
-  document.querySelector("#abrir-libreta-flotante")?.addEventListener("click", abrir_libreta_flotante);
   document.querySelector("#cerrar-libreta-flotante")?.addEventListener("click", cerrar_libreta_flotante);
   document.querySelector("#cerrar-vista-previa-libreta")?.addEventListener("click", () => cerrar_modal("#vista-previa-libreta"));
+  document.querySelector("#libreta-flotante [data-exportar-libreta-pdf]")?.addEventListener("click", abrir_vista_previa_libreta);
   document.querySelector("#imprimir-libreta-pdf")?.addEventListener("click", imprimir_libreta_pdf);
   document.querySelector("#vista-previa-libreta")?.addEventListener("click", (evento) => { if (evento.target === evento.currentTarget) cerrar_modal("#vista-previa-libreta"); });
   enlazar_arrastre_libreta();
+  enlazar_redimension_libreta();
   document.querySelector<HTMLInputElement>("#archivo")?.addEventListener("change", async (evento) => {
     const entrada = evento.currentTarget as HTMLInputElement;
     try { await importar_documentos(entrada.files); }
     catch (error) { informar_error("Importación de documento", error); }
-    finally { entrada.value = ""; }
-  });
-  document.querySelector<HTMLInputElement>("#carpeta")?.addEventListener("change", async (evento) => {
-    const entrada = evento.currentTarget as HTMLInputElement;
-    try { await importar_documentos(entrada.files); }
-    catch (error) { informar_error("Importación de carpeta", error); }
     finally { entrada.value = ""; }
   });
   document.querySelector("#reproducir")?.addEventListener("click", alternar_reproduccion);
@@ -2819,6 +2928,9 @@ function montar_aplicacion(): void {
   });
   const redibujar_pdf = crear_ejecutor_diferido(() => { if (es_vista_pdf_original()) void renderizar_pagina_pdf(pagina_pdf_actual); }, 160);
   window.addEventListener("resize", redibujar_pdf);
+  window.addEventListener("resize", reposicionar_superposiciones);
+  window.visualViewport?.addEventListener("resize", reposicionar_superposiciones);
+  window.visualViewport?.addEventListener("scroll", reposicionar_superposiciones);
   enlazar_eventos_biblioteca();
   if (es_interfaz_movil()) perfil_actual = normalizar_perfil({ ...perfil_actual, componentes: { ...perfil_actual.componentes, biblioteca: false, inspector: false } });
   aplicar_perfil(); renderizar_panel_izquierdo(); renderizar_panel_fragmentos(); renderizar_biblioteca(); sincronizar_campos_perfil(); actualizar_controles(); renderizar_pestanas_documentos();

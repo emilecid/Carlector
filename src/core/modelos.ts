@@ -2,12 +2,33 @@ export type PoliticaMatematica = "leer" | "omitir" | "indicar";
 export type TipoFragmento = "texto" | "matematica" | "tabla";
 export type EstructuraDocumento = "parrafo" | "titulo" | "lista" | "cita" | "referencia" | "nota_pie" | "encabezado" | "pie_pagina" | "preformateado" | "tabla" | "matematica";
 
+export interface UnidadLectura {
+  texto: string;
+  inicio: number;
+  fin: number;
+  pagina?: number;
+}
+
+export interface AnclaLectura {
+  bloque_id: string;
+  inicio: number;
+  fin: number;
+  pagina?: number;
+}
+
+export interface PartePdfLectura {
+  pagina: number;
+  texto: string;
+}
+
 export interface FragmentoLectura {
   id: string;
   visible: string;
   locucion: string | null;
   tipo: TipoFragmento;
   pagina?: number;
+  paginas?: number[];
+  partes_pdf?: PartePdfLectura[];
   bloque_id?: string;
   estructura?: EstructuraDocumento;
   nivel?: number;
@@ -16,7 +37,9 @@ export interface FragmentoLectura {
   inicio_bloque?: boolean;
   fin_bloque?: boolean;
   salto_linea_antes?: boolean;
-  ancla?: { bloque_id: string; inicio: number; fin: number };
+  unidades?: UnidadLectura[];
+  ancla?: AnclaLectura;
+  anclas?: AnclaLectura[];
 }
 
 export interface DocumentoBiblioteca {
@@ -39,6 +62,8 @@ export interface EstadoLecturaDocumento {
   indice_unidad: number;
   desplazamiento: number;
   modo_visual_pdf: "texto" | "original" | "doble";
+  modo_lectura?: "continua" | "rsvp";
+  unidad_rsvp?: "palabra" | "frase";
   componentes: { biblioteca: boolean; inspector: boolean; controles: boolean };
 }
 

@@ -1,19 +1,28 @@
 export interface RectanguloAncla { izquierda: number; superior: number; derecha: number; inferior: number }
 export interface Tamano { ancho: number; alto: number }
+export type AreaVisible = RectanguloAncla;
 export type EjecutorDiferido<Argumentos extends unknown[]> = ((...argumentos: Argumentos) => void) & { cancelar: () => void };
+export type VistaAplicacion = "biblioteca" | "lector";
+export type PanelIzquierdo = "biblioteca" | "indice";
+
+export function resolver_panel_izquierdo(vista: VistaAplicacion, documento_id: string | null): PanelIzquierdo {
+  return vista === "lector" && documento_id ? "indice" : "biblioteca";
+}
 
 export function calcular_posicion_superpuesta(
   ancla: RectanguloAncla,
   superposicion: Tamano,
-  ventana: Tamano,
+  area_visible: AreaVisible,
   separacion = 8,
 ): { izquierda: number; superior: number } {
-  const izquierda_maxima = Math.max(separacion, ventana.ancho - superposicion.ancho - separacion);
-  const izquierda = Math.min(Math.max(separacion, ancla.izquierda), izquierda_maxima);
-  const cabe_abajo = ancla.inferior + separacion + superposicion.alto <= ventana.alto - separacion;
+  const izquierda_minima = area_visible.izquierda + separacion;
+  const superior_minima = area_visible.superior + separacion;
+  const izquierda_maxima = Math.max(izquierda_minima, area_visible.derecha - superposicion.ancho - separacion);
+  const izquierda = Math.min(Math.max(izquierda_minima, ancla.izquierda), izquierda_maxima);
+  const cabe_abajo = ancla.inferior + separacion + superposicion.alto <= area_visible.inferior - separacion;
   const superior_propuesta = cabe_abajo ? ancla.inferior + separacion : ancla.superior - separacion - superposicion.alto;
-  const superior_maxima = Math.max(separacion, ventana.alto - superposicion.alto - separacion);
-  return { izquierda, superior: Math.min(Math.max(separacion, superior_propuesta), superior_maxima) };
+  const superior_maxima = Math.max(superior_minima, area_visible.inferior - superposicion.alto - separacion);
+  return { izquierda, superior: Math.min(Math.max(superior_minima, superior_propuesta), superior_maxima) };
 }
 
 export function crear_ejecutor_diferido<Argumentos extends unknown[]>(

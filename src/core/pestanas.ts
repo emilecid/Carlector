@@ -6,15 +6,13 @@ export interface SesionPestanas {
 export interface SesionDivision {
   documentos: string[];
   proporciones: number[];
-  orientacion: OrientacionMosaico;
 }
 
-export type OrientacionMosaico = "horizontal" | "vertical";
-export type ZonaAcoplamiento = "izquierda" | "derecha" | "arriba" | "abajo";
+export const MAX_DOCUMENTOS_MOSAICO = 3;
 
-export interface ResultadoAcoplamiento {
-  activo: string | null;
+export interface ResultadoAlternanciaMosaico {
   division: SesionDivision;
+  limite_alcanzado: boolean;
 }
 
 export function abrir_pestana(sesion: SesionPestanas, id_documento: string): SesionPestanas {
@@ -49,35 +47,33 @@ export function normalizar_sesion_division(sesion: Partial<SesionDivision>, acti
   return {
     documentos,
     proporciones,
-    orientacion: sesion.orientacion === "vertical" ? "vertical" : "horizontal",
   };
 }
 
-export function acoplar_documento(
+export function alternar_documento_mosaico(
   sesion: Partial<SesionDivision>,
   id_documento: string,
   activo: string | null,
-  zona: ZonaAcoplamiento,
   disponibles: Set<string>,
-  proporcion_destino?: number,
-): ResultadoAcoplamiento {
+): ResultadoAlternanciaMosaico {
   const division_actual = normalizar_sesion_division(sesion, activo, disponibles);
-  if (!activo || id_documento === activo || !disponibles.has(id_documento)) return { activo, division: division_actual };
-  const antes = zona === "izquierda" || zona === "arriba";
-  const nuevo_activo = antes ? id_documento : activo;
-  const restantes = division_actual.documentos.filter((id) => id !== id_documento);
-  const documentos = (antes ? [activo, ...restantes] : [...restantes, id_documento]).slice(0, 2);
-  const cantidad = documentos.length + 1;
-  const indice_destino = antes ? 0 : cantidad - 1;
+  if (!activo || id_documento === activo || !disponibles.has(id_documento)) {
+    return { division: division_actual, limite_alcanzado: false };
+  }
+  if (division_actual.documentos.includes(id_documento)) {
+    const documentos = division_actual.documentos.filter((id) => id !== id_documento);
+    return {
+      division: { documentos, proporciones: proporciones_uniformes(documentos.length + 1) },
+      limite_alcanzado: false,
+    };
+  }
+  if (division_actual.documentos.length + 1 >= MAX_DOCUMENTOS_MOSAICO) {
+    return { division: division_actual, limite_alcanzado: true };
+  }
+  const documentos = [...division_actual.documentos, id_documento];
   return {
-    activo: nuevo_activo,
-    division: {
-      documentos,
-      proporciones: Number.isFinite(proporcion_destino)
-        ? distribuir_proporcion_destino(cantidad, indice_destino, proporcion_destino as number)
-        : proporciones_uniformes(cantidad),
-      orientacion: zona === "arriba" || zona === "abajo" ? "vertical" : "horizontal",
-    },
+    division: { documentos, proporciones: proporciones_uniformes(documentos.length + 1) },
+    limite_alcanzado: false,
   };
 }
 
@@ -105,18 +101,4 @@ function normalizar_proporciones(proporciones: number[]): number[] {
   const normalizadas = proporciones.map((valor) => Math.round((valor / total) * 10_000) / 100);
   normalizadas[normalizadas.length - 1] = Math.round((100 - normalizadas.slice(0, -1).reduce((suma, valor) => suma + valor, 0)) * 100) / 100;
   return normalizadas;
-}
-
-function distribuir_proporcion_destino(cantidad: number, indice_destino: number, proporcion_destino: number): number[] {
-  if (cantidad < 2) return cantidad === 1 ? [100] : [];
-  const minimo = 15;
-  const maximo = 100 - minimo * (cantidad - 1);
-  const destino = Math.min(maximo, Math.max(minimo, proporcion_destino));
-  const restantes = proporciones_uniformes(cantidad - 1).map((valor) => valor * (100 - destino) / 100);
-  const resultado = Array.from({ length: cantidad }, () => 0);
-  let indice_restante = 0;
-  resultado.forEach((_, indice) => {
-    resultado[indice] = indice === indice_destino ? destino : restantes[indice_restante++] ?? minimo;
-  });
-  return normalizar_proporciones(resultado);
 }

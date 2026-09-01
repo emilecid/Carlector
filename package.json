@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "tauri": "tauri"
+    "tauri": "PATH=\"/opt/homebrew/opt/rustup/bin:$PATH\" tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",

@@ -5,6 +5,7 @@ pub mod markdown;
 mod preferencias;
 
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use biblioteca::{abrir_base_datos, descubrir_documentos_directorio, Carpeta, Documento, ErrorBiblioteca, EstadoLecturaDocumento, FragmentoGuardado, NotaDocumento, RepositorioBiblioteca};
@@ -14,6 +15,7 @@ use tauri::{Emitter, Manager, State};
 
 struct EstadoAplicacion {
     biblioteca: Mutex<RepositorioBiblioteca>,
+    directorio_biblioteca: PathBuf,
     kokoro: Arc<Mutex<MotorKokoro>>,
 }
 
@@ -100,29 +102,34 @@ fn crear_carpeta(nombre: String, estado: State<'_, EstadoAplicacion>) -> Result<
 }
 
 #[tauri::command]
-fn vincular_carpeta_sistema(ruta: String, estado: State<'_, EstadoAplicacion>) -> Result<Carpeta, String> {
-    estado.biblioteca.lock().map_err(|_| "No fue posible bloquear la biblioteca".to_string())?.vincular_carpeta_sistema(&ruta).map_err(|error| error.to_string())
+fn sincronizar_biblioteca(estado: State<'_, EstadoAplicacion>) -> Result<(), String> {
+    estado.biblioteca.lock().map_err(|_| "No fue posible bloquear la biblioteca".to_string())?.sincronizar_biblioteca().map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-fn sincronizar_carpeta_sistema(id: String, estado: State<'_, EstadoAplicacion>) -> Result<Vec<Documento>, String> {
-    estado.biblioteca.lock().map_err(|_| "No fue posible bloquear la biblioteca".to_string())?.sincronizar_carpeta_sistema(&id).map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn abrir_carpeta_en_finder(id: String, estado: State<'_, EstadoAplicacion>) -> Result<(), String> {
-    let ruta = estado.biblioteca.lock().map_err(|_| "No fue posible bloquear la biblioteca".to_string())?.ruta_carpeta_sistema(&id).map_err(|error| error.to_string())?;
+fn abrir_directorio_en_finder(ruta: &Path) -> Result<(), String> {
+    if !ruta.is_dir() {
+        return Err(format!("La carpeta no existe: {}", ruta.display()));
+    }
     #[cfg(target_os = "macos")]
-    let estado_apertura = std::process::Command::new("/usr/bin/open").arg(&ruta).status();
-    #[cfg(target_os = "linux")]
-    let estado_apertura = std::process::Command::new("xdg-open").arg(&ruta).status();
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    return Err("Abrir la carpeta del sistema no está disponible en esta plataforma".to_string());
+    let estado_apertura = std::process::Command::new("/usr/bin/open").arg(ruta).status();
+    #[cfg(not(target_os = "macos"))]
+    return Err("Abrir Finder solo está disponible en macOS".to_string());
     estado_apertura.map_err(|error| format!("No fue posible abrir la carpeta: {error}"))?.success().then_some(()).ok_or_else(|| "Finder no pudo abrir la carpeta".to_string())
 }
 
 #[tauri::command]
-fn renombrar_carpeta(id: String, nombre: String, estado: State<'_, EstadoAplicacion>) -> Result<(), String> {
+fn abrir_biblioteca_en_finder(estado: State<'_, EstadoAplicacion>) -> Result<(), String> {
+    abrir_directorio_en_finder(&estado.directorio_biblioteca)
+}
+
+#[tauri::command]
+fn abrir_carpeta_en_finder(id: String, estado: State<'_, EstadoAplicacion>) -> Result<(), String> {
+    let ruta = estado.biblioteca.lock().map_err(|_| "No fue posible bloquear la biblioteca".to_string())?.ruta_carpeta(&id).map_err(|error| error.to_string())?;
+    abrir_directorio_en_finder(Path::new(&ruta))
+}
+
+#[tauri::command]
+fn renombrar_carpeta(id: String, nombre: String, estado: State<'_, EstadoAplicacion>) -> Result<Carpeta, String> {
     estado.biblioteca.lock().map_err(|_| "No fue posible bloquear la biblioteca".to_string())?.renombrar_carpeta(&id, &nombre).map_err(|error| error.to_string())
 }
 
@@ -132,8 +139,13 @@ fn eliminar_carpeta(id: String, estado: State<'_, EstadoAplicacion>) -> Result<(
 }
 
 #[tauri::command]
-fn mover_documento(id_documento: String, carpeta_id: Option<String>, estado: State<'_, EstadoAplicacion>) -> Result<(), String> {
+fn mover_documento(id_documento: String, carpeta_id: Option<String>, estado: State<'_, EstadoAplicacion>) -> Result<Documento, String> {
     estado.biblioteca.lock().map_err(|_| "No fue posible bloquear la biblioteca".to_string())?.mover_documento(&id_documento, carpeta_id.as_deref()).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn renombrar_documento(id: String, nombre: String, estado: State<'_, EstadoAplicacion>) -> Result<Documento, String> {
+    estado.biblioteca.lock().map_err(|_| "No fue posible bloquear la biblioteca".to_string())?.renombrar_documento(&id, &nombre).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -206,6 +218,9 @@ pub fn ejecutar() {
             preferencias::instalar_menu(aplicacion)?;
             let directorio_datos = aplicacion.path().app_data_dir()?;
             fs::create_dir_all(&directorio_datos)?;
+            let directorio_biblioteca = directorio_datos.join("Biblioteca");
+            fs::create_dir_all(&directorio_biblioteca)?;
+            let directorio_biblioteca = directorio_biblioteca.canonicalize()?;
             let ruta_anterior = directorio_datos.join("lector.db");
             let ruta_actual = directorio_datos.join("carlector.db");
             if ruta_anterior.is_file() && !ruta_actual.exists() {
@@ -213,10 +228,10 @@ pub fn ejecutar() {
             }
             let conexion = abrir_base_datos(&ruta_actual)
                 .map_err(|error: ErrorBiblioteca| error.to_string())?;
-            aplicacion.manage(EstadoAplicacion { biblioteca: Mutex::new(conexion), kokoro: Arc::new(Mutex::new(MotorKokoro::nuevo(&directorio_datos))) });
+            aplicacion.manage(EstadoAplicacion { biblioteca: Mutex::new(conexion), directorio_biblioteca, kokoro: Arc::new(Mutex::new(MotorKokoro::nuevo(&directorio_datos))) });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![asociaciones::estado_asociaciones_archivo, asociaciones::establecer_asociacion_archivo, estado_kokoro, instalar_kokoro, sintetizar_kokoro, listar_documentos, importar_documento, guardar_progreso, leer_documento, extraer_markdown, tomar_archivos_abiertos, listar_documentos_directorio, listar_carpetas, crear_carpeta, vincular_carpeta_sistema, sincronizar_carpeta_sistema, abrir_carpeta_en_finder, renombrar_carpeta, eliminar_carpeta, mover_documento, editar_documento, reordenar_documentos, eliminar_documento, guardar_fragmento, listar_fragmentos, eliminar_fragmento, cambiar_destacado_fragmento, guardar_nota, listar_notas, eliminar_nota, guardar_cache_documento, leer_cache_documento])
+        .invoke_handler(tauri::generate_handler![asociaciones::estado_asociaciones_archivo, asociaciones::establecer_asociacion_archivo, estado_kokoro, instalar_kokoro, sintetizar_kokoro, listar_documentos, importar_documento, guardar_progreso, leer_documento, extraer_markdown, tomar_archivos_abiertos, listar_documentos_directorio, listar_carpetas, crear_carpeta, sincronizar_biblioteca, abrir_biblioteca_en_finder, abrir_carpeta_en_finder, renombrar_carpeta, eliminar_carpeta, mover_documento, renombrar_documento, editar_documento, reordenar_documentos, eliminar_documento, guardar_fragmento, listar_fragmentos, eliminar_fragmento, cambiar_destacado_fragmento, guardar_nota, listar_notas, eliminar_nota, guardar_cache_documento, leer_cache_documento])
         .build(tauri::generate_context!())
         .expect("No fue posible construir Carlector");
     aplicacion.run(|manejador, evento| {

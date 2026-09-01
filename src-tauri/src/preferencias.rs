@@ -3,16 +3,11 @@ use tauri::App;
 #[cfg(target_os = "macos")]
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
-    AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder,
 };
 
 #[cfg(target_os = "macos")]
 const ID_MENU_PREFERENCIAS: &str = "abrir-preferencias";
-#[cfg(target_os = "macos")]
-const ID_MOSAICO_COLUMNAS: &str = "mosaico-columnas";
-#[cfg(target_os = "macos")]
-const ID_MOSAICO_FILAS: &str = "mosaico-filas";
-#[cfg(target_os = "macos")]
 pub(super) const ETIQUETA_VENTANA_PREFERENCIAS: &str = "preferencias";
 
 #[cfg(target_os = "macos")]
@@ -45,11 +40,6 @@ pub(super) fn instalar_menu(aplicacion: &mut App) -> tauri::Result<()> {
     let preferencias = MenuItemBuilder::with_id(ID_MENU_PREFERENCIAS, "Configuración…")
         .accelerator("CmdOrCtrl+,")
         .build(aplicacion)?;
-    let mosaico_columnas = MenuItemBuilder::with_id(ID_MOSAICO_COLUMNAS, "Mosaico en columnas")
-        .build(aplicacion)?;
-    let mosaico_filas = MenuItemBuilder::with_id(ID_MOSAICO_FILAS, "Mosaico en filas")
-        .build(aplicacion)?;
-
     let menu_aplicacion = SubmenuBuilder::new(aplicacion, "Carlector")
         .about(None)
         .separator()
@@ -78,9 +68,6 @@ pub(super) fn instalar_menu(aplicacion: &mut App) -> tauri::Result<()> {
         .separator()
         .fullscreen_with_text("Pantalla completa")
         .separator()
-        .item(&mosaico_columnas)
-        .item(&mosaico_filas)
-        .separator()
         .bring_all_to_front_with_text("Traer todo al frente")
         .build()?;
     let menu = MenuBuilder::new(aplicacion)
@@ -88,19 +75,10 @@ pub(super) fn instalar_menu(aplicacion: &mut App) -> tauri::Result<()> {
         .build()?;
     aplicacion.set_menu(menu)?;
     aplicacion.on_menu_event(|manejador, evento| {
-        match evento.id().as_ref() {
-            ID_MENU_PREFERENCIAS => {
-                if let Err(error) = abrir_ventana_preferencias(manejador) {
-                    eprintln!("No fue posible abrir Configuración: {error}");
-                }
+        if evento.id().as_ref() == ID_MENU_PREFERENCIAS {
+            if let Err(error) = abrir_ventana_preferencias(manejador) {
+                eprintln!("No fue posible abrir Configuración: {error}");
             }
-            ID_MOSAICO_COLUMNAS => {
-                let _ = manejador.emit_to("main", "mosaico-orientacion", "horizontal");
-            }
-            ID_MOSAICO_FILAS => {
-                let _ = manejador.emit_to("main", "mosaico-orientacion", "vertical");
-            }
-            _ => {}
         }
     });
     Ok(())

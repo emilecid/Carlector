@@ -63,20 +63,23 @@ export function crear_html_exportacion_libreta(exportacion: ExportacionLibreta):
   const fecha = Number.isNaN(Date.parse(exportacion.fecha))
     ? exportacion.fecha
     : new Intl.DateTimeFormat("es-CL", { dateStyle: "long" }).format(new Date(exportacion.fecha));
-  const entradas = exportacion.entradas.map(({ fragmento, pagina, notas }, indice) => `
+  const entradas = exportacion.entradas.map(({ fragmento, pagina, notas }, indice) => {
+    const notas_html = notas.length
+      ? `<div class="notas-exportacion-libreta">
+        <h3>Notas</h3>
+        ${notas.map(({ texto }) => `<p>${texto_con_saltos(texto)}</p>`).join("")}
+      </div>`
+      : "";
+    return `
     <section class="entrada-exportacion-libreta">
       <header class="cabecera-entrada-exportacion">
         <h2>Fragmento ${indice + 1}</h2>
         ${pagina === null ? "" : `<span>Página ${pagina}</span>`}
       </header>
       <blockquote>${texto_con_saltos(fragmento.texto)}</blockquote>
-      <div class="notas-exportacion-libreta">
-        <h3>Notas</h3>
-        ${notas.length
-          ? notas.map(({ texto }) => `<p>${texto_con_saltos(texto)}</p>`).join("")
-          : '<p class="sin-notas-exportacion">Sin notas asociadas.</p>'}
-      </div>
-    </section>`).join("");
+      ${notas_html}
+    </section>`;
+  }).join("");
   const notas_generales = exportacion.notas_generales.length
     ? `<section class="notas-generales-exportacion"><h2>Notas generales</h2>${exportacion.notas_generales.map(({ texto }) => `<p>${texto_con_saltos(texto)}</p>`).join("")}</section>`
     : "";
