@@ -9,7 +9,7 @@ import { convertir_bloques_a_texto, VERSION_CACHE_DOCUMENTO, type DocumentoProce
 import type { CarpetaBiblioteca, DocumentoBiblioteca, EstadoLecturaDocumento, FragmentoGuardado, FragmentoLectura, NotaDocumento, PerfilLectura, PoliticaMatematica } from "./core/modelos.ts";
 import { debe_guardar_progreso, fragmento_esta_destacado, resolver_destino_indice } from "./core/herramientas_lectura.ts";
 import { resolver_indice_fragmento } from "./core/navegacion_lector.ts";
-import { calcular_posicion_superpuesta, crear_ejecutor_diferido, resolver_panel_izquierdo } from "./core/interfaz.ts";
+import { calcular_posicion_superpuesta, crear_ejecutor_diferido, detectar_entorno_ios, resolver_panel_izquierdo } from "./core/interfaz.ts";
 import { abrir_pestana, ajustar_proporciones_paneles, alternar_documento_mosaico, cerrar_pestana, normalizar_documentos_divididos, normalizar_sesion_division, normalizar_sesion_pestanas, proporciones_uniformes, type SesionDivision, type SesionPestanas } from "./core/pestanas.ts";
 import { resolver_control_paquete_voz } from "./core/interfaz_voz.ts";
 import { crear_informe_error } from "./core/informador_errores.ts";
@@ -135,8 +135,9 @@ const ETIQUETAS_ATAJOS: Record<AccionAtajo, string> = {
   modo_enfoque: "Modo lectura",
   alternar_pdf: "Cambiar vista PDF",
 };
-const CONSULTA_INTERFAZ_MOVIL = "(max-width:700px), (max-width:900px) and (pointer:coarse)";
+const CONSULTA_INTERFAZ_MOVIL = "(max-width:700px), (max-width:1100px) and (pointer:coarse)";
 const ES_VENTANA_PREFERENCIAS = new URLSearchParams(window.location.search).get("preferencias") === "1";
+const ES_IOS = detectar_entorno_ios(navigator.userAgent, navigator.platform, navigator.maxTouchPoints);
 
 function es_interfaz_movil(): boolean {
   return window.matchMedia(CONSULTA_INTERFAZ_MOVIL).matches;
@@ -220,8 +221,8 @@ function aplicar_perfil(): void {
   raiz.style.setProperty("--ancho-lectura", `${perfil_actual.ancho_lectura}px`);
   raiz.style.setProperty("--ancho-panel-izquierdo", `${perfil_actual.disposicion.ancho_biblioteca}px`);
   raiz.style.setProperty("--ancho-panel-derecho", `${perfil_actual.disposicion.ancho_inspector}px`);
-  raiz.style.setProperty("--alto-cabecera", `${perfil_actual.disposicion.alto_barra_superior}px`);
-  raiz.style.setProperty("--alto-reproductor", `${perfil_actual.disposicion.alto_controles}px`);
+  raiz.style.setProperty("--alto-cabecera", ES_IOS ? "calc(56px + env(safe-area-inset-top))" : `${perfil_actual.disposicion.alto_barra_superior}px`);
+  raiz.style.setProperty("--alto-reproductor", ES_IOS ? "calc(64px + env(safe-area-inset-bottom))" : `${perfil_actual.disposicion.alto_controles}px`);
   raiz.style.setProperty("--escala-controles", String(perfil_actual.disposicion.escala_controles));
   Object.entries(perfil_actual.colores).forEach(([nombre, color]) => raiz.style.setProperty(`--${nombre}`, color));
   document.body.classList.toggle("modo-oscuro", perfil_actual.tema === "oscuro");
@@ -546,7 +547,7 @@ function cerrar_libreta_flotante(): void {
 function enlazar_arrastre_libreta(): void {
   const ventana = document.querySelector<HTMLElement>("#libreta-flotante");
   const asa = document.querySelector<HTMLElement>("#asa-libreta-flotante");
-  if (!ventana || !asa) return;
+  if (!ventana || !asa || ES_IOS) return;
   asa.tabIndex = 0;
   asa.setAttribute("aria-label", "Mover Libreta con flechas; Option y flechas cambia su tamaño");
   asa.addEventListener("keydown", (evento) => {
@@ -606,7 +607,7 @@ function ajustar_tamano_libreta(ventana: HTMLElement, ancho: number, alto: numbe
 function enlazar_redimension_libreta(): void {
   const ventana = document.querySelector<HTMLElement>("#libreta-flotante");
   const asa_redimension = document.querySelector<HTMLButtonElement>("#asa-redimension-libreta");
-  if (!ventana || !asa_redimension) return;
+  if (!ventana || !asa_redimension || ES_IOS) return;
   let inicio: { puntero: number; x: number; y: number; ancho: number; alto: number } | null = null;
   asa_redimension.addEventListener("pointerdown", (evento) => {
     if (evento.pointerType === "mouse" && evento.button !== 0) return;
@@ -2092,7 +2093,7 @@ async function alternar_destacado_fragmento(id: string): Promise<void> {
 function abrir_menu_carpeta(id: string, x: number, y: number): void {
   const carpeta = carpetas.find((actual) => actual.id === id);
   if (!carpeta) return;
-  const acciones_sistema = `<button data-accion="abrir-finder">Abrir en Finder</button><button data-accion="sincronizar">Sincronizar Biblioteca</button>`;
+  const acciones_sistema = `${ES_IOS ? "" : `<button data-accion="abrir-finder">Abrir en Finder</button>`}<button data-accion="sincronizar">Sincronizar Biblioteca</button>`;
   const menu = mostrar_menu_contextual(`<strong>${escapar_html(carpeta.nombre)}</strong>${acciones_sistema}<button data-accion="renombrar">Renombrar</button><button class="accion-peligrosa" data-accion="eliminar">Eliminar carpeta</button>`, x, y);
   menu?.querySelector("[data-accion='abrir-finder']")?.addEventListener("click", () => void abrir_carpeta_en_finder(carpeta));
   menu?.querySelector("[data-accion='sincronizar']")?.addEventListener("click", () => void ejecutar_importacion(actualizar_biblioteca_nativa, "No fue posible sincronizar la Biblioteca"));
@@ -2686,10 +2687,11 @@ function montar_aplicacion(): void {
   const aplicacion = document.querySelector<HTMLElement>("#app");
   if (!aplicacion) return;
   document.body.classList.toggle("ventana-preferencias", ES_VENTANA_PREFERENCIAS);
+  document.body.classList.toggle("plataforma-ios", ES_IOS);
   aplicacion.innerHTML = `<div class="aplicacion"><header class="barra-superior">
     <nav class="pestanas" aria-label="Documentos abiertos"><button class="pestana activa" data-vista="biblioteca">Biblioteca</button><span id="pestanas-documentos" class="pestanas-documentos" role="tablist"></span></nav>
     <div class="acciones-superiores"><span id="estado-mosaico" class="estado-mosaico" role="status" aria-live="polite"></span><button id="modo-enfoque" class="boton">Modo lectura</button><input id="archivo" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" multiple></div><div class="busqueda-global" role="search" aria-label="Buscar en la vista actual" hidden><input id="busqueda-global" type="search" placeholder="Buscar" aria-label="Texto que buscar"><span id="estado-busqueda-global" aria-live="polite"></span><button id="busqueda-anterior" aria-label="Resultado anterior">↑</button><button id="busqueda-siguiente" aria-label="Resultado siguiente">↓</button><button id="cerrar-busqueda-global" aria-label="Cerrar búsqueda">×</button></div></header>
-    <div class="contenido"><aside id="panel-biblioteca" class="panel" aria-label="Biblioteca"><button id="alternar-panel-biblioteca" class="flecha-panel flecha-panel-izquierda" aria-label="Ocultar biblioteca">‹</button><div class="panel-contenido"><header class="cabecera-panel-contextual"><h2 id="titulo-panel-izquierdo">Biblioteca</h2></header><div id="contenido-biblioteca"><section class="panel-seccion"><div class="encabezado-panel"><h2 class="panel-titulo">Organización</h2><button id="abrir-carpeta-finder" class="agregar-biblioteca" aria-label="Mostrar biblioteca en Finder" title="Mostrar biblioteca en Finder"><svg class="icono-carpeta-finder" aria-hidden="true" viewBox="0 0 24 24"><path d="M3.5 7.5h6l2-2h9v13h-17z"/></svg></button></div><nav id="navegacion-biblioteca" class="navegacion"></nav></section>
+    <div class="contenido"><aside id="panel-biblioteca" class="panel" aria-label="Biblioteca"><button id="alternar-panel-biblioteca" class="flecha-panel flecha-panel-izquierda" aria-label="Ocultar biblioteca">‹</button><div class="panel-contenido"><header class="cabecera-panel-contextual"><h2 id="titulo-panel-izquierdo">Biblioteca</h2></header><div id="contenido-biblioteca"><section class="panel-seccion"><div class="encabezado-panel"><h2 class="panel-titulo">Organización</h2><button id="abrir-carpeta-finder" class="agregar-biblioteca" data-solo-macos aria-label="Mostrar biblioteca en Finder" title="Mostrar biblioteca en Finder"><svg class="icono-carpeta-finder" aria-hidden="true" viewBox="0 0 24 24"><path d="M3.5 7.5h6l2-2h9v13h-17z"/></svg></button></div><nav id="navegacion-biblioteca" class="navegacion"></nav></section>
     <section class="panel-seccion"><h2 class="panel-titulo">Carpetas</h2><nav id="carpetas-biblioteca" class="navegacion"></nav></section></div><section id="contenido-indice" class="panel-seccion" hidden></section>
     </div></aside><section id="vista-principal" class="vista-principal"></section><aside id="panel-inspector" class="panel panel-derecho" aria-label="${ES_VENTANA_PREFERENCIAS ? "Configuración" : "Libreta"}"><button id="alternar-panel-inspector" class="flecha-panel flecha-panel-derecha" aria-label="Ocultar Libreta">›</button><div class="panel-contenido"><header class="cabecera-preferencias"><h1 id="titulo-preferencias" tabindex="-1">Configuración</h1><p>Preferencias locales de Carlector</p></header><div id="contenido-perfil" hidden><details id="configuracion-interfaz" class="panel-seccion grupo-configuracion" open><summary>Interfaz</summary><div class="contenido-grupo-configuracion">
     <div class="lista-visibilidad-interfaz" aria-label="Elementos visibles">${crear_controles_interfaz()}</div>
@@ -2703,7 +2705,7 @@ function montar_aplicacion(): void {
     <div class="campo"><div class="encabezado-campo"><label>Temas</label><button id="abrir-biblioteca-temas" class="boton-biblioteca-temas" aria-label="Abrir biblioteca de temas" title="Biblioteca de temas">▦</button></div><div class="temas-predefinidos"><button data-tema-preset="diurno">Diurno</button><button data-tema-preset="nocturno">Nocturno</button><button data-tema-preset="sepia">Sepia</button><button data-tema-preset="contraste">Contraste</button></div></div>
     <div class="campo"><label>Colores personalizados</label><div class="colores-personalizados">${Object.entries(perfil_actual.colores).map(([nombre, valor]) => `<label>${nombre}<input type="color" data-color-interfaz="${nombre}" value="${valor}"></label>`).join("")}</div></div>
     <div class="campo"><div class="campo-linea"><label for="tamano">Tamaño</label><span id="valor-tamano"></span></div><input id="tamano" type="range" min="12" max="40" value="${perfil_actual.tamano_fuente}"></div></div></details>
-    <details id="configuracion-archivos" class="panel-seccion grupo-configuracion"><summary>Archivos</summary><div class="contenido-grupo-configuracion"><p class="ayuda-campo">Formatos admitidos: PDF con capa de texto, EPUB estructurado y Markdown. Los originales permanecen en su ubicación.</p><div id="asociaciones-archivo" class="asociaciones-archivo" aria-label="Aplicaciones predeterminadas por formato">
+    <details id="configuracion-archivos" class="panel-seccion grupo-configuracion" data-solo-macos><summary>Archivos</summary><div class="contenido-grupo-configuracion"><p class="ayuda-campo">Formatos admitidos: PDF con capa de texto, EPUB estructurado y Markdown. Los originales permanecen en su ubicación.</p><div id="asociaciones-archivo" class="asociaciones-archivo" aria-label="Aplicaciones predeterminadas por formato">
     <div><strong>PDF</strong><span data-estado-asociacion="pdf">Comprobando…</span><button class="boton" type="button" data-establecer-asociacion="pdf">Usar Carlector</button></div>
     <div><strong>EPUB</strong><span data-estado-asociacion="epub">Comprobando…</span><button class="boton" type="button" data-establecer-asociacion="epub">Usar Carlector</button></div>
     <div><strong>Markdown</strong><span data-estado-asociacion="markdown">Comprobando…</span><button class="boton" type="button" data-establecer-asociacion="markdown">Usar Carlector</button></div>
@@ -2738,6 +2740,7 @@ function montar_aplicacion(): void {
     contenido_perfil?.remove();
     cabecera_preferencias?.remove();
   }
+  document.querySelectorAll<HTMLElement>("[data-solo-macos]").forEach((elemento) => { elemento.hidden = ES_IOS; });
   aplicacion.insertAdjacentHTML("beforeend", `<section id="vista-previa-libreta" class="modal-temas vista-previa-libreta" role="dialog" aria-modal="true" aria-labelledby="titulo-vista-previa-libreta" hidden><div class="dialogo-exportacion-libreta"><header class="acciones-vista-previa-libreta"><div><h2 id="titulo-vista-previa-libreta">Vista previa de Libreta</h2><p>En macOS, usa PDF → Guardar como PDF en el diálogo siguiente.</p></div><button id="cerrar-vista-previa-libreta" aria-label="Cerrar vista previa">×</button></header><div id="contenido-exportacion-libreta" class="contenido-exportacion-libreta"></div><footer class="acciones-vista-previa-libreta"><button id="imprimir-libreta-pdf" class="boton primario" type="button">Guardar PDF…</button></footer></div></section>`);
 
   ([["#biblioteca-temas", "Biblioteca de temas"], ["#repositorios-voz", "Repositorios de voz"]] as Array<[string, string]>).forEach(([selector, etiqueta]) => {
@@ -2935,7 +2938,7 @@ function montar_aplicacion(): void {
   if (es_interfaz_movil()) perfil_actual = normalizar_perfil({ ...perfil_actual, componentes: { ...perfil_actual.componentes, biblioteca: false, inspector: false } });
   aplicar_perfil(); renderizar_panel_izquierdo(); renderizar_panel_fragmentos(); renderizar_biblioteca(); sincronizar_campos_perfil(); actualizar_controles(); renderizar_pestanas_documentos();
   void actualizar_estado_kokoro();
-  void actualizar_estado_asociaciones_archivo();
+  if (!ES_IOS) void actualizar_estado_asociaciones_archivo();
   void inicializar_sincronizacion_perfil().catch((error) => informar_error("Sincronización de preferencias", error));
   if (!ES_VENTANA_PREFERENCIAS) {
     void inicializar_apertura_archivos_nativa().catch((error) => informar_error("Apertura de documentos", error));

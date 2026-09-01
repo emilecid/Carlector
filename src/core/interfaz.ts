@@ -5,6 +5,11 @@ export type EjecutorDiferido<Argumentos extends unknown[]> = ((...argumentos: Ar
 export type VistaAplicacion = "biblioteca" | "lector";
 export type PanelIzquierdo = "biblioteca" | "indice";
 
+export function detectar_entorno_ios(agente_usuario: string, plataforma: string, puntos_contacto: number): boolean {
+  return /iPhone|iPad|iPod/i.test(agente_usuario)
+    || (plataforma === "MacIntel" && puntos_contacto > 1);
+}
+
 export function resolver_panel_izquierdo(vista: VistaAplicacion, documento_id: string | null): PanelIzquierdo {
   return vista === "lector" && documento_id ? "indice" : "biblioteca";
 }

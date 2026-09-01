@@ -434,15 +434,16 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   .control-documento { display:none; }
   .control-velocidad { padding-inline:10px; }
 }
-@media (min-width:701px) and (max-width:1100px){
+@media (min-width:701px) and (max-width:1100px) and (pointer:fine){
   .contenido .panel { overflow:hidden; z-index:auto; }
   .contenido .panel-contenido { position:static; width:100%; height:100%; box-shadow:none; }
   #panel-inspector .panel-contenido { background:var(--superficie); box-shadow:none; }
 }
-@media (max-width:700px), (max-width:900px) and (pointer:coarse){
+@media (max-width:700px), (max-width:1100px) and (pointer:coarse){
   :root { --ancho-panel-izquierdo:44px; --ancho-panel-derecho:44px; --alto-cabecera:calc(56px + env(safe-area-inset-top)); --alto-reproductor:calc(64px + env(safe-area-inset-bottom)); }
   .barra-superior { grid-template-columns:minmax(0,1fr) auto; grid-template-rows:48px; padding-top:env(safe-area-inset-top); padding-inline:max(8px,env(safe-area-inset-left)) max(8px,env(safe-area-inset-right)); }
   .pestanas { grid-column:1; grid-row:1; }
+  .pestana-documento { grid-template-columns:minmax(48px,120px) 44px 44px; }
   .acciones-superiores { grid-column:2; grid-row:1; }
   .acciones-superiores .boton { padding:7px 9px; font-size:12px; }
   .busqueda-global { width:100%; }
@@ -469,6 +470,8 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   .divisor-panel-documento { display:block; width:12px; min-width:12px; height:100%; min-height:0; cursor:col-resize; }
   .divisor-panel-documento::before { inset:0 4px; }
   :is(.boton,.boton-icono,.reproducir,.flecha-panel,.agregar-biblioteca,.selector-vista-pdf button,.salto-pagina-pdf button,.pestana-documento button) { min-width:44px; min-height:44px; }
+  .fragmento-guardado { grid-template-columns:minmax(0,1fr) 44px 44px 44px; }
+  .fragmento-guardado button,.nota-documento button,.dialogo-temas>header>button { min-width:44px; min-height:44px; }
   input,select { font-size:16px; }
   .lector-pdf-original .lector-cabecera { align-items:flex-start; }
   .barra-visor-pdf { gap:5px; padding-inline:6px; }
@@ -477,6 +480,11 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   #estado-seleccion-pdf { width:100%; margin:0; text-align:center; }
   .modo-enfoque #salir-modo-enfoque { position:fixed; z-index:300; top:max(8px,env(safe-area-inset-top)); right:max(8px,env(safe-area-inset-right)); display:grid; place-items:center; width:44px; height:44px; border:1px solid var(--borde); border-radius:50%; color:var(--texto); background:color-mix(in srgb,var(--superficie),transparent 10%); box-shadow:var(--shadow-raised); }
   .modo-enfoque .vista-principal { padding-inline:env(safe-area-inset-left) env(safe-area-inset-right); }
+  .plataforma-ios .libreta-flotante { inset-block:max(var(--space-2),env(safe-area-inset-top)) max(var(--space-2),env(safe-area-inset-bottom)); inset-inline:max(var(--space-2),env(safe-area-inset-left)) max(var(--space-2),env(safe-area-inset-right)); width:auto; height:auto; min-width:0; min-height:0; max-width:none; max-height:none; resize:none; }
+  .plataforma-ios .libreta-flotante>header { cursor:default; touch-action:auto; }
+  .plataforma-ios .asa-redimension-libreta { display:none; }
+  .plataforma-ios :is(.modal-temas,.informador-error) { padding-block:max(var(--space-2),env(safe-area-inset-top)) max(var(--space-2),env(safe-area-inset-bottom)); padding-inline:max(var(--space-2),env(safe-area-inset-left)) max(var(--space-2),env(safe-area-inset-right)); }
+  .plataforma-ios :is(.dialogo-temas,.dialogo-exportacion-libreta,.informador-error>div) { width:100%; height:100%; max-width:none; max-height:none; border-radius:var(--radius-card); }
 }
 @media print {
   @page { size:A4; margin:18mm 17mm 20mm; }
