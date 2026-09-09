@@ -81,6 +81,10 @@ impl MotorKokoro {
         self.motor.as_mut().ok_or_else(|| "No fue posible iniciar Kokoro ONNX".to_string())
     }
 
+    pub fn preparar(&mut self) -> Result<(), String> {
+        self.cargar_motor().map(|_| ())
+    }
+
     pub async fn sintetizar(&mut self, texto: &str, voz: Option<&str>, velocidad: f32, idioma: Option<&str>) -> Result<Vec<u8>, String> {
         if texto.trim().is_empty() { return Err("No hay texto para sintetizar".to_string()); }
         let idioma = normalizar_idioma(idioma.unwrap_or("en-us"))?;
@@ -90,7 +94,7 @@ impl MotorKokoro {
         let motor = self.cargar_motor()?;
         motor.load_voice(voz).map_err(|error| format!("No fue posible cargar la voz {voz}: {error}"))?;
         let muestras = motor.synth(&fonemas, voz, velocidad).map_err(|error| format!("Kokoro no pudo sintetizar el fragmento: {error}"))?;
-        crear_wav(&muestras, 24_000)
+        crear_wav(recortar_silencio_bordes(&muestras, 24_000), 24_000)
     }
 }
 
@@ -201,6 +205,13 @@ fn validar_sha256(ruta: &Path, esperado: &str, nombre: &str) -> Result<String, S
     if obtenido == esperado { Ok(obtenido) } else { Err(format!("El {nombre} no coincide con el SHA-256 oficial. Descárgalo nuevamente desde Repositorios de voz.")) }
 }
 
+fn recortar_silencio_bordes(muestras: &[f32], frecuencia: u32) -> &[f32] {
+    let Some(inicio_senal) = muestras.iter().position(|muestra| muestra.abs() >= 0.001) else { return muestras };
+    let fin_senal = muestras.iter().rposition(|muestra| muestra.abs() >= 0.001).unwrap_or(inicio_senal) + 1;
+    let margen = frecuencia as usize / 50;
+    &muestras[inicio_senal.saturating_sub(margen)..fin_senal.saturating_add(margen).min(muestras.len())]
+}
+
 fn crear_wav(muestras: &[f32], frecuencia: u32) -> Result<Vec<u8>, String> {
     let longitud_datos = muestras.len().checked_mul(2).ok_or_else(|| "Audio demasiado extenso".to_string())? as u32;
     let mut salida = Vec::with_capacity(44 + longitud_datos as usize);
@@ -233,6 +244,19 @@ mod pruebas {
     }
 
     #[test]
+    fn recorta_silencio_artificial_conservando_margen_y_senal() {
+        let mut muestras = vec![0.0; 2_400];
+        muestras.extend(vec![0.25; 2_400]);
+        muestras.extend(vec![0.0; 2_400]);
+
+        let recortadas = recortar_silencio_bordes(&muestras, 24_000);
+
+        assert_eq!(recortadas.len(), 3_360);
+        assert_eq!(recortadas[480], 0.25);
+        assert_eq!(recortadas[2_879], 0.25);
+    }
+
+    #[test]
     fn estado_exige_modelo_y_voces_con_tamano_utilizable() {
         let raiz = std::env::temp_dir().join(format!("carlector-kokoro-{}", std::process::id()));
         let directorio = raiz.join("motores").join("kokoro-onnx-v1");
@@ -244,6 +268,16 @@ mod pruebas {
         fs::write(directorio.join(ARCHIVO_VOCES), [0_u8; 10]).expect("voces inválidas");
         assert!(!motor.estado().expect("estado inválido").instalado);
         fs::remove_dir_all(&raiz).expect("limpiar temporal Kokoro");
+    }
+
+    #[test]
+    fn precalentamiento_informa_si_kokoro_no_esta_instalado() {
+        let raiz = std::env::temp_dir().join(format!("carlector-kokoro-ausente-{}", std::process::id()));
+        let mut motor = MotorKokoro::nuevo(&raiz);
+
+        let error = motor.preparar().expect_err("debe faltar Kokoro");
+
+        assert!(error.contains("no está instalado"));
     }
 
     #[test]

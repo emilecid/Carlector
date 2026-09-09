@@ -51,6 +51,14 @@ async fn sintetizar_kokoro(texto: String, voz: Option<String>, velocidad: f32, i
 }
 
 #[tauri::command]
+async fn preparar_kokoro(estado: State<'_, EstadoAplicacion>) -> Result<(), String> {
+    let kokoro = Arc::clone(&estado.kokoro);
+    tauri::async_runtime::spawn_blocking(move || {
+        kokoro.lock().map_err(|_| "No fue posible bloquear Kokoro".to_string())?.preparar()
+    }).await.map_err(|error| format!("Falló la preparación de Kokoro: {error}"))?
+}
+
+#[tauri::command]
 fn listar_documentos(estado: State<'_, EstadoAplicacion>) -> Result<Vec<Documento>, String> {
     let biblioteca = estado.biblioteca.lock().map_err(|_| "No fue posible bloquear la biblioteca".to_string())?;
     biblioteca.listar_documentos().map_err(|error| error.to_string())
@@ -231,7 +239,7 @@ pub fn ejecutar() {
             aplicacion.manage(EstadoAplicacion { biblioteca: Mutex::new(conexion), directorio_biblioteca, kokoro: Arc::new(Mutex::new(MotorKokoro::nuevo(&directorio_datos))) });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![asociaciones::estado_asociaciones_archivo, asociaciones::establecer_asociacion_archivo, estado_kokoro, instalar_kokoro, sintetizar_kokoro, listar_documentos, importar_documento, guardar_progreso, leer_documento, extraer_markdown, tomar_archivos_abiertos, listar_documentos_directorio, listar_carpetas, crear_carpeta, sincronizar_biblioteca, abrir_biblioteca_en_finder, abrir_carpeta_en_finder, renombrar_carpeta, eliminar_carpeta, mover_documento, renombrar_documento, editar_documento, reordenar_documentos, eliminar_documento, guardar_fragmento, listar_fragmentos, eliminar_fragmento, cambiar_destacado_fragmento, guardar_nota, listar_notas, eliminar_nota, guardar_cache_documento, leer_cache_documento])
+        .invoke_handler(tauri::generate_handler![asociaciones::estado_asociaciones_archivo, asociaciones::establecer_asociacion_archivo, estado_kokoro, instalar_kokoro, preparar_kokoro, sintetizar_kokoro, listar_documentos, importar_documento, guardar_progreso, leer_documento, extraer_markdown, tomar_archivos_abiertos, listar_documentos_directorio, listar_carpetas, crear_carpeta, sincronizar_biblioteca, abrir_biblioteca_en_finder, abrir_carpeta_en_finder, renombrar_carpeta, eliminar_carpeta, mover_documento, renombrar_documento, editar_documento, reordenar_documentos, eliminar_documento, guardar_fragmento, listar_fragmentos, eliminar_fragmento, cambiar_destacado_fragmento, guardar_nota, listar_notas, eliminar_nota, guardar_cache_documento, leer_cache_documento])
         .build(tauri::generate_context!())
         .expect("No fue posible construir Carlector");
     aplicacion.run(|manejador, evento| {

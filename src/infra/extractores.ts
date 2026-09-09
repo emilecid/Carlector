@@ -4,7 +4,7 @@ import { GlobalWorkerOptions, getDocument } from "pdfjs-dist/legacy/build/pdf.mj
 import url_trabajador_pdf from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
 
 import { crear_bloque_pdf, VERSION_CACHE_DOCUMENTO, type BloqueDocumento, type DocumentoProcesado, type GeometriaLineaPdf } from "../core/documentos.ts";
-import { detectar_lineas_marginales_repetidas, type LineaMarginalPdf } from "../core/limpieza_pdf.ts";
+import { detectar_codificacion_legacy_pdf, detectar_lineas_marginales_repetidas, type LineaMarginalPdf } from "../core/limpieza_pdf.ts";
 import type { EntradaIndice } from "../core/modelos.ts";
 import { agrupar_indices_lineas_texto_pdf } from "../core/visor_pdf.ts";
 import { clasificar_estructura_epub } from "./semantica_epub.ts";
@@ -108,8 +108,9 @@ export async function extraer_pdf(datos: ArrayBuffer, nombre_archivo: string, no
     await ceder_control_interfaz();
   }
   const marginales = detectar_lineas_marginales_repetidas(lineas_extraidas);
+  const codificacion_legacy = detectar_codificacion_legacy_pdf(lineas_extraidas.map(({ texto }) => texto));
   lineas_extraidas.filter(({ id }) => !marginales.has(id)).forEach(({ id, pagina, texto, fuentes, geometria_pdf }) => {
-    bloques.push(crear_bloque_pdf(id, pagina, texto, fuentes, geometria_pdf));
+    bloques.push(crear_bloque_pdf(id, pagina, texto, fuentes, geometria_pdf, codificacion_legacy));
   });
   const informacion = metadata?.info as { Title?: string; Author?: string } | undefined;
   const indice_documento: EntradaIndice[] = [];

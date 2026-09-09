@@ -155,6 +155,7 @@ export interface PerfilLectura {
   saltar_citas: boolean;
   modo_lectura: "continua" | "rsvp";
   unidad_rsvp: "palabra" | "frase";
+  maximo_palabras_rsvp_visibles: number;
   palabras_por_minuto: number;
   palabras_por_minuto_rsvp: number;
   voz_habilitada: boolean;
@@ -181,4 +182,7 @@ export interface AtajosLectura {
   siguiente: AtajoTeclado;
   modo_enfoque: AtajoTeclado;
   alternar_pdf: AtajoTeclado;
+  alternar_voz: AtajoTeclado;
+  aumentar_velocidad: AtajoTeclado;
+  reducir_velocidad: AtajoTeclado;
 }

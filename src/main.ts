@@ -14,7 +14,8 @@ import { abrir_pestana, ajustar_proporciones_paneles, alternar_documento_mosaico
 import { resolver_control_paquete_voz } from "./core/interfaz_voz.ts";
 import { crear_informe_error } from "./core/informador_errores.ts";
 import { crear_exportacion_libreta, crear_html_exportacion_libreta } from "./core/libreta.ts";
-import { ajustar_palabras_por_minuto, ajustar_ritmo_general, ajustar_velocidad, clases_visibilidad_paneles, combinar_componentes_documento, PERFIL_PREDETERMINADO, TEMAS_PREDEFINIDOS, normalizar_perfil, velocidades_desde_ritmo, type PerfilLecturaParcial } from "./core/perfiles.ts";
+import { ajustar_palabras_por_minuto, ajustar_ritmo_general, ajustar_velocidad, cambio_velocidad_reproduccion, clases_visibilidad_paneles, combinar_componentes_documento, PERFIL_PREDETERMINADO, TEMAS_PREDEFINIDOS, normalizar_perfil, velocidades_desde_ritmo, type PerfilLecturaParcial } from "./core/perfiles.ts";
+import { crear_ventanas_rsvp_visual, indice_ventana_rsvp_por_caracter, type VentanaRsvpVisual } from "./core/rsvp.ts";
 import { segmentar_bloques, segmentar_texto, unidades_fragmento_lectura } from "./core/segmentacion.ts";
 import { agrupar_locuciones, indice_locucion_en_posicion } from "./core/tts.ts";
 import { ajustar_zoom_pdf, cambio_zoom_gesto_pdf, indice_de_punto_pdf, indice_de_seleccion_pdf, indice_inicial_pagina, mapear_fragmentos_pdf, pagina_de_fragmento, rango_canonico_unidad_pdf, rango_relativo_fragmento_pdf, rango_relativo_unidad_pdf, rango_textual_unidad_pdf, resolver_pagina_pdf, type RangoTextoPdf } from "./core/visor_pdf.ts";
@@ -57,7 +58,8 @@ let consulta_biblioteca = "";
 let documento_actual: DocumentoBiblioteca | null = null;
 let fragmentos: FragmentoLectura[] = [];
 let indice_fragmento = 0;
-let reproduciendo = false;
+type EstadoReproduccion = "detenido" | "reproduciendo" | "pausado" | "cargando";
+let estado_reproduccion: EstadoReproduccion = "detenido";
 let vista_actual: "biblioteca" | "lector" = "biblioteca";
 const documentos_procesados = new Map<string, DocumentoProcesado>();
 const binarios_pdf_web = new Map<string, ArrayBuffer>();
@@ -72,7 +74,6 @@ const CONFIGURACION_HTML_LIBRETA = {
 let indice_resaltado_anterior = -1;
 let ultimo_guardado_progreso = 0;
 let generacion_voz = 0;
-let preparando_voz = false;
 let siguiente_indice_cola = 0;
 let locuciones_pendientes = 0;
 let generacion_renderizado = 0;
@@ -80,6 +81,7 @@ let documento_renderizando = false;
 let temporizador_avance: number | null = null;
 let temporizador_seguimiento_pdf: number | null = null;
 let indice_unidad_rsvp = 0;
+let indice_ventana_rsvp = 0;
 let indice_unidad_pdf = 0;
 let unidades_seguimiento_pdf: string[] = [];
 let indice_fragmento_seguimiento_pdf = -1;
@@ -134,12 +136,19 @@ const ETIQUETAS_ATAJOS: Record<AccionAtajo, string> = {
   siguiente: "Fragmento siguiente",
   modo_enfoque: "Modo lectura",
   alternar_pdf: "Cambiar vista PDF",
+  alternar_voz: "Activar o desactivar voz",
+  aumentar_velocidad: "Aumentar velocidad",
+  reducir_velocidad: "Reducir velocidad",
 };
 const CONSULTA_INTERFAZ_MOVIL = "(max-width:700px), (max-width:900px) and (pointer:coarse)";
 const ES_VENTANA_PREFERENCIAS = new URLSearchParams(window.location.search).get("preferencias") === "1";
 
 function es_interfaz_movil(): boolean {
   return window.matchMedia(CONSULTA_INTERFAZ_MOVIL).matches;
+}
+
+function reproduccion_activa(): boolean {
+  return estado_reproduccion === "reproduciendo" || estado_reproduccion === "cargando";
 }
 
 if (!documentos.some((documento) => documento.id === DOCUMENTO_DEMOSTRACION.id)) {
@@ -723,7 +732,7 @@ async function obtener_binario_pdf(documento: DocumentoBiblioteca): Promise<Arra
 
 function crear_cabecera_lector(es_original: boolean): string {
   if (!documento_actual) return "";
-  if (documento_actual.formato === "PDF") return `<div class="lector-cabecera"><div id="herramientas-pdf" class="herramientas-pdf"><div class="selector-vista-pdf" role="group" aria-label="Presentación del PDF"><button id="vista-pdf-texto" type="button">Texto adaptado</button><button id="vista-pdf-original" type="button">Documento original</button><button id="modo-pdf-doble" type="button">PDF + RSVP</button></div><form id="salto-pagina-pdf" class="salto-pagina-pdf"><label for="numero-pagina-pdf">Página</label><input id="numero-pagina-pdf" type="number" min="1" step="1" inputmode="numeric"><span id="total-paginas-pdf">/—</span><button id="ir-pagina-pdf" type="submit">Ir</button><span id="error-pagina-pdf" role="status"></span></form></div></div>`;
+  if (documento_actual.formato === "PDF") return `<div class="lector-cabecera lector-cabecera-pdf"><div id="herramientas-pdf" class="herramientas-pdf"><div class="selector-vista-pdf" role="group" aria-label="Presentación del PDF"><button id="vista-pdf-continuo" type="button">Continuo</button><button id="vista-pdf-rsvp" type="button">RSVP</button><button id="vista-pdf-original" type="button">PDF</button><button id="modo-pdf-doble" type="button">PDF + RSVP</button></div><form id="salto-pagina-pdf" class="salto-pagina-pdf"><label for="numero-pagina-pdf">Página</label><input id="numero-pagina-pdf" type="number" min="1" step="1" inputmode="numeric"><span id="total-paginas-pdf">/—</span><button id="ir-pagina-pdf" type="submit">Ir</button><span id="error-pagina-pdf" role="status"></span></form></div></div>`;
   if (perfil_actual.modo_lectura === "rsvp" && !es_original) return "";
   return `<div class="lector-cabecera"><span>${escapar_html(documento_actual.formato)} · lectura local</span></div>`;
 }
@@ -792,15 +801,20 @@ function actualizar_herramientas_pdf(): void {
   const herramientas = document.querySelector<HTMLElement>("#herramientas-pdf");
   if (!herramientas) return;
   const total = cantidad_paginas_pdf_actual();
-  const texto = document.querySelector<HTMLButtonElement>("#vista-pdf-texto");
+  const continuo = document.querySelector<HTMLButtonElement>("#vista-pdf-continuo");
+  const rsvp = document.querySelector<HTMLButtonElement>("#vista-pdf-rsvp");
   const original = document.querySelector<HTMLButtonElement>("#vista-pdf-original");
   const doble = document.querySelector<HTMLButtonElement>("#modo-pdf-doble");
   const entrada = document.querySelector<HTMLInputElement>("#numero-pagina-pdf");
   const limite = document.querySelector<HTMLElement>("#total-paginas-pdf");
-  texto?.classList.toggle("activo", modo_visual_pdf === "texto");
+  const continuo_activo = modo_visual_pdf === "texto" && perfil_actual.modo_lectura === "continua";
+  const rsvp_activo = modo_visual_pdf === "texto" && perfil_actual.modo_lectura === "rsvp";
+  continuo?.classList.toggle("activo", continuo_activo);
+  rsvp?.classList.toggle("activo", rsvp_activo);
   original?.classList.toggle("activo", modo_visual_pdf === "original");
   doble?.classList.toggle("activo", modo_visual_pdf === "doble");
-  texto?.setAttribute("aria-pressed", String(modo_visual_pdf === "texto"));
+  continuo?.setAttribute("aria-pressed", String(continuo_activo));
+  rsvp?.setAttribute("aria-pressed", String(rsvp_activo));
   original?.setAttribute("aria-pressed", String(modo_visual_pdf === "original"));
   doble?.setAttribute("aria-pressed", String(modo_visual_pdf === "doble"));
   if (entrada) {
@@ -872,7 +886,7 @@ function sincronizar_pagina_pdf_con_fragmento(): void {
   if (pagina === pagina_pdf_actual) return;
   pagina_pdf_actual = pagina;
   actualizar_barra_visor_pdf();
-  void visor_pdf?.ir_a_pagina(pagina, reproduciendo ? "auto" : "smooth");
+  void visor_pdf?.ir_a_pagina(pagina, reproduccion_activa() ? "auto" : "smooth");
 }
 
 const renderizar_zoom_pdf_diferido = crear_ejecutor_diferido(() => { if (es_vista_pdf_original()) void renderizar_pagina_pdf(pagina_pdf_actual); }, 120);
@@ -992,7 +1006,7 @@ function resaltar_fragmento_pdf(pagina_renderizada?: number): void {
   unidades_activas.forEach((elemento) => { elemento.classList.add("unidad-pdf-activa"); elemento.setAttribute("aria-current", "true"); });
   if (!unidades_activas.length) activos[0]?.setAttribute("aria-current", "true");
   const destino_scroll = unidades_activas[0] ?? activos[0];
-  if (perfil_actual.auto_scroll && !autoscroll_suspendido) destino_scroll?.scrollIntoView({ behavior: reproduciendo ? "auto" : "smooth", block: "center", inline: "nearest" });
+  if (perfil_actual.auto_scroll && !autoscroll_suspendido) destino_scroll?.scrollIntoView({ behavior: reproduccion_activa() ? "auto" : "smooth", block: "center", inline: "nearest" });
   actualizar_estado_fragmento_pdf();
 }
 
@@ -1010,7 +1024,7 @@ function anclar_click_pdf(evento: Event): void {
 }
 
 function suspender_autoscroll_manual(): void {
-  if (reproduciendo) autoscroll_suspendido = true;
+  if (reproduccion_activa()) autoscroll_suspendido = true;
 }
 
 function anclar_seleccion_pdf(): void {
@@ -1021,10 +1035,18 @@ function anclar_seleccion_pdf(): void {
 }
 
 async function establecer_vista_pdf(modo: ModoVisualPdf): Promise<void> {
-  if (documento_actual?.formato !== "PDF" || vista_actual !== "lector" || modo_visual_pdf === modo) return;
+  await establecer_presentacion_pdf(modo);
+}
+
+async function establecer_presentacion_pdf(modo: ModoVisualPdf, modo_lectura?: PerfilLectura["modo_lectura"]): Promise<void> {
+  if (documento_actual?.formato !== "PDF" || vista_actual !== "lector") return;
+  const cambia_vista = modo_visual_pdf !== modo;
+  const cambia_lectura = modo_lectura !== undefined && perfil_actual.modo_lectura !== modo_lectura;
+  if (!cambia_vista && !cambia_lectura) return;
   guardar_posicion_actual(true);
   detener_voz();
   modo_visual_pdf = modo;
+  if (cambia_lectura) actualizar_perfil({ modo_lectura }, true, false);
   if (modo_visual_pdf === "texto") await cerrar_visor_pdf();
   await renderizar_lector();
   actualizar_herramientas_pdf();
@@ -1057,7 +1079,8 @@ async function saltar_a_pagina_pdf(): Promise<void> {
 }
 
 function enlazar_eventos_visor_pdf(): void {
-  document.querySelector("#vista-pdf-texto")?.addEventListener("click", () => void establecer_vista_pdf("texto"));
+  document.querySelector("#vista-pdf-continuo")?.addEventListener("click", () => void establecer_presentacion_pdf("texto", "continua"));
+  document.querySelector("#vista-pdf-rsvp")?.addEventListener("click", () => void establecer_presentacion_pdf("texto", "rsvp"));
   document.querySelector("#vista-pdf-original")?.addEventListener("click", () => void establecer_vista_pdf("original"));
   document.querySelector("#modo-pdf-doble")?.addEventListener("click", () => void establecer_vista_pdf("doble"));
   document.querySelector("#salto-pagina-pdf")?.addEventListener("submit", (evento) => { evento.preventDefault(); void saltar_a_pagina_pdf(); });
@@ -1459,7 +1482,7 @@ function actualizar_resaltado(): void {
   actual?.classList.add("activo");
   actual?.classList.remove("no-activo");
   indice_resaltado_anterior = indice_fragmento;
-  if (perfil_actual.auto_scroll && !autoscroll_suspendido) actual?.scrollIntoView({ behavior: reproduciendo ? "auto" : "smooth", block: "center" });
+  if (perfil_actual.auto_scroll && !autoscroll_suspendido) actual?.scrollIntoView({ behavior: reproduccion_activa() ? "auto" : "smooth", block: "center" });
   actualizar_controles();
 }
 
@@ -1505,7 +1528,7 @@ function programar_plan_seguimiento_pdf(plan: PasoRsvp[], posicion: number, indi
   const anterior = plan[posicion - 1];
   if (!paso || !anterior) return;
   temporizador_seguimiento_pdf = window.setTimeout(() => {
-    if (generacion !== generacion_voz || !reproduciendo || indice_fragmento !== indice_seguido) return;
+    if (generacion !== generacion_voz || !reproduccion_activa() || indice_fragmento !== indice_seguido) return;
     indice_unidad_pdf = paso.indice;
     resaltar_fragmento_pdf();
     sincronizar_pagina_pdf_con_fragmento();
@@ -1521,16 +1544,15 @@ function programar_seguimiento_pdf(duracion_ms: number, generacion: number): voi
   programar_plan_seguimiento_pdf(plan, 1, indice_seguido, generacion);
 }
 
-function detener_voz(guardar = true): void {
+function detener_voz(guardar = true, estado_final: Extract<EstadoReproduccion, "detenido" | "pausado"> = "detenido"): void {
   generacion_voz += 1;
-  preparando_voz = false;
   window.speechSynthesis?.cancel();
   reproductor_kokoro.detener();
   audios_kokoro.clear();
   if (temporizador_avance !== null) window.clearTimeout(temporizador_avance);
   temporizador_avance = null;
   cancelar_seguimiento_pdf();
-  reproduciendo = false;
+  estado_reproduccion = estado_final;
   locuciones_pendientes = 0;
   if (guardar) guardar_posicion_actual(true);
   actualizar_controles();
@@ -1560,11 +1582,12 @@ function preparar_audio_adelantado_kokoro(inicio: number, modo: "continua" | "rs
 }
 
 function avanzar_fragmento_kokoro(generacion: number): void {
-  if (generacion !== generacion_voz || !reproduciendo) return;
+  if (generacion !== generacion_voz || !reproduccion_activa()) return;
   const siguiente = indices_locuciones_adelantadas(fragmentos, indice_fragmento + 1, 1)[0];
   if (siguiente === undefined) { detener_voz(); return; }
   indice_fragmento = siguiente;
   indice_unidad_rsvp = 0;
+  indice_ventana_rsvp = 0;
   indice_fragmento_seguimiento_pdf = -1;
   guardar_posicion_actual();
   actualizar_resaltado();
@@ -1575,9 +1598,13 @@ function reproducir_fragmento(): void {
   if (!fragmentos.length) return;
   detener_voz(false);
   autoscroll_suspendido = false;
-  reproduciendo = true;
+  estado_reproduccion = "reproduciendo";
   if (perfil_actual.voz_habilitada && perfil_actual.motor_voz === "kokoro_onnx" && isTauri()) desbloqueo_audio_kokoro = reproductor_kokoro.desbloquear();
-  if (perfil_actual.modo_lectura === "rsvp" || modo_visual_pdf === "doble") { reproducir_rsvp(); return; }
+  if (perfil_actual.modo_lectura === "rsvp" || modo_visual_pdf === "doble") {
+    if (perfil_actual.voz_habilitada) indice_ventana_rsvp = 0;
+    reproducir_rsvp();
+    return;
+  }
   if (!perfil_actual.voz_habilitada) { reproducir_sin_voz(); return; }
   if (perfil_actual.motor_voz === "kokoro_onnx" && isTauri()) { void reproducir_fragmento_kokoro(generacion_voz); return; }
   if (!window.speechSynthesis) return;
@@ -1588,30 +1615,30 @@ function reproducir_fragmento(): void {
 
 async function reproducir_fragmento_kokoro(generacion: number): Promise<void> {
   const fragmento = fragmentos[indice_fragmento];
-  if (!fragmento || generacion !== generacion_voz || !reproduciendo) return;
+  if (!fragmento || generacion !== generacion_voz || !reproduccion_activa()) return;
   if (fragmento.locucion === null) { avanzar_fragmento_kokoro(generacion); return; }
   const clave = `continua:${indice_fragmento}:0`;
   const solicitud = solicitar_audio_kokoro(clave, fragmento.locucion, generacion);
-  preparando_voz = !solicitud.lista;
+  preparar_audio_adelantado_kokoro(indice_fragmento + 1, "continua", generacion);
+  estado_reproduccion = "cargando";
   actualizar_controles();
   try {
     await desbloqueo_audio_kokoro;
-    if (generacion !== generacion_voz || !reproduciendo) return;
+    if (generacion !== generacion_voz || !reproduccion_activa()) return;
     const datos = await solicitud.promesa;
     audios_kokoro.delete(clave);
-    if (generacion !== generacion_voz || !reproduciendo) return;
+    if (generacion !== generacion_voz || !reproduccion_activa()) return;
     await reproductor_kokoro.reproducir_buffer(datos, () => avanzar_fragmento_kokoro(generacion), (duracion_segundos) => {
-      if (generacion !== generacion_voz || !reproduciendo) return;
+      if (generacion !== generacion_voz || !reproduccion_activa()) return;
+      estado_reproduccion = "reproduciendo";
+      actualizar_controles();
       actualizar_resaltado();
       programar_seguimiento_pdf(duracion_segundos * 1_000, generacion);
-      preparar_audio_adelantado_kokoro(indice_fragmento + 1, "continua", generacion);
     });
   } catch (error) {
     detener_voz();
     informar_error("Reproducción Kokoro", error);
-  } finally {
-    if (generacion === generacion_voz) { preparando_voz = false; actualizar_controles(); }
-  }
+  } finally { if (generacion === generacion_voz) actualizar_controles(); }
 }
 
 function obtener_unidades_rsvp(): string[] {
@@ -1623,6 +1650,10 @@ function obtener_unidades_rsvp(): string[] {
   return unidades_fragmento_lectura(fragmento).map(({ texto }) => texto);
 }
 
+function obtener_ventanas_rsvp_visual(unidad: string): VentanaRsvpVisual[] {
+  return crear_ventanas_rsvp_visual(unidad, perfil_actual.maximo_palabras_rsvp_visibles);
+}
+
 function actualizar_visor_rsvp(): void {
   if (es_vista_pdf_original()) {
     resaltar_fragmento_pdf();
@@ -1632,8 +1663,11 @@ function actualizar_visor_rsvp(): void {
   }
   const unidades = obtener_unidades_rsvp();
   indice_unidad_rsvp = Math.min(Math.max(0, indice_unidad_rsvp), Math.max(0, unidades.length - 1));
+  const unidad = unidades[indice_unidad_rsvp] ?? "";
+  const ventanas = obtener_ventanas_rsvp_visual(unidad);
+  indice_ventana_rsvp = Math.min(Math.max(0, indice_ventana_rsvp), Math.max(0, ventanas.length - 1));
   const texto = document.querySelector<HTMLElement>("#texto-rsvp");
-  if (texto) texto.textContent = unidades[indice_unidad_rsvp] ?? "";
+  if (texto) texto.textContent = ventanas[indice_ventana_rsvp]?.texto ?? unidad;
 }
 
 function avanzar_unidad_rsvp(): boolean {
@@ -1642,15 +1676,18 @@ function avanzar_unidad_rsvp(): boolean {
   if (indice_fragmento >= fragmentos.length - 1) return false;
   indice_fragmento += 1;
   indice_unidad_rsvp = 0;
+  indice_ventana_rsvp = 0;
   guardar_posicion_actual();
   return true;
 }
 
 function reproducir_rsvp(): void {
-  if (!reproduciendo) return;
+  if (!reproduccion_activa()) return;
   const unidad = obtener_unidades_rsvp()[indice_unidad_rsvp] ?? "";
-  const avanzar = (): void => {
-    if (!reproduciendo) return;
+  const ventanas = obtener_ventanas_rsvp_visual(unidad);
+  const avanzar_unidad = (): void => {
+    if (!reproduccion_activa()) return;
+    indice_ventana_rsvp = 0;
     if (!avanzar_unidad_rsvp()) { detener_voz(); return; }
     reproducir_rsvp();
   };
@@ -1663,16 +1700,31 @@ function reproducir_rsvp(): void {
     const locucion = new SpeechSynthesisUtterance(unidad);
     locucion.lang = perfil_actual.idioma_voz;
     locucion.rate = perfil_actual.velocidad;
-    locucion.onstart = actualizar_visor_rsvp;
-    locucion.onend = avanzar;
+    estado_reproduccion = "cargando";
+    actualizar_controles();
+    locucion.onstart = () => { estado_reproduccion = "reproduciendo"; actualizar_controles(); actualizar_visor_rsvp(); };
+    locucion.onboundary = (evento) => {
+      indice_ventana_rsvp = indice_ventana_rsvp_por_caracter(ventanas, evento.charIndex);
+      actualizar_visor_rsvp();
+    };
+    locucion.onend = avanzar_unidad;
     locucion.onerror = () => detener_voz();
     window.speechSynthesis.speak(locucion);
     return;
   }
   actualizar_visor_rsvp();
-  const palabras = Math.max(1, unidad.split(/\s+/u).filter(Boolean).length);
-  const pausa = /[.!?…]$/u.test(unidad) ? 1.65 : /[,;:]$/u.test(unidad) ? 1.25 : 1;
-  temporizador_avance = window.setTimeout(avanzar, Math.max(80, palabras / perfil_actual.palabras_por_minuto_rsvp * 60_000 * pausa));
+  const ventana = ventanas[indice_ventana_rsvp]?.texto ?? unidad;
+  const palabras = Math.max(1, ventana.split(/\s+/u).filter(Boolean).length);
+  const pausa = /[.!?…]$/u.test(ventana) ? 1.65 : /[,;:]$/u.test(ventana) ? 1.25 : 1;
+  temporizador_avance = window.setTimeout(() => {
+    if (!reproduccion_activa()) return;
+    if (indice_ventana_rsvp < ventanas.length - 1) {
+      indice_ventana_rsvp += 1;
+      reproducir_rsvp();
+      return;
+    }
+    avanzar_unidad();
+  }, Math.max(80, palabras / perfil_actual.palabras_por_minuto_rsvp * 60_000 * pausa));
 }
 
 function programar_plan_rsvp_kokoro(plan: PasoRsvp[], posicion: number, indice_inicial: number, generacion: number): void {
@@ -1680,54 +1732,77 @@ function programar_plan_rsvp_kokoro(plan: PasoRsvp[], posicion: number, indice_i
   const anterior = plan[posicion - 1];
   if (!paso || !anterior) return;
   temporizador_avance = window.setTimeout(() => {
-    if (generacion !== generacion_voz || !reproduciendo) return;
+    if (generacion !== generacion_voz || !reproduccion_activa()) return;
     indice_unidad_rsvp = indice_inicial + paso.indice;
+    indice_ventana_rsvp = 0;
     actualizar_visor_rsvp();
     programar_plan_rsvp_kokoro(plan, posicion + 1, indice_inicial, generacion);
+  }, Math.max(0, paso.inicio_ms - anterior.inicio_ms));
+}
+
+function programar_plan_visual_rsvp(plan: PasoRsvp[], posicion: number, generacion: number): void {
+  const paso = plan[posicion];
+  const anterior = plan[posicion - 1];
+  if (!paso || !anterior) return;
+  temporizador_avance = window.setTimeout(() => {
+    if (generacion !== generacion_voz || !reproduccion_activa()) return;
+    indice_ventana_rsvp = paso.indice;
+    actualizar_visor_rsvp();
+    programar_plan_visual_rsvp(plan, posicion + 1, generacion);
   }, Math.max(0, paso.inicio_ms - anterior.inicio_ms));
 }
 
 async function reproducir_fragmento_rsvp_kokoro(generacion: number): Promise<void> {
   const fragmento = fragmentos[indice_fragmento];
   const unidades = obtener_unidades_rsvp();
-  if (!fragmento?.locucion || !unidades.length || generacion !== generacion_voz || !reproduciendo) return;
+  if (!fragmento?.locucion || !unidades.length || generacion !== generacion_voz || !reproduccion_activa()) return;
   const indice_inicial = indice_unidad_rsvp;
   const restantes = unidades.slice(indice_inicial);
   const texto = indice_inicial === 0 ? fragmento.locucion : restantes.join(" ");
   const clave = `rsvp:${indice_fragmento}:${indice_inicial}`;
   const solicitud = solicitar_audio_kokoro(clave, texto, generacion);
-  preparando_voz = !solicitud.lista;
+  preparar_audio_adelantado_kokoro(indice_fragmento + 1, "rsvp", generacion);
+  estado_reproduccion = "cargando";
   actualizar_controles();
   try {
     await desbloqueo_audio_kokoro;
-    if (generacion !== generacion_voz || !reproduciendo) return;
+    if (generacion !== generacion_voz || !reproduccion_activa()) return;
     const datos = await solicitud.promesa;
     audios_kokoro.delete(clave);
-    if (generacion !== generacion_voz || !reproduciendo) return;
+    if (generacion !== generacion_voz || !reproduccion_activa()) return;
     await reproductor_kokoro.reproducir_buffer(datos, () => {
-      if (generacion !== generacion_voz || !reproduciendo) return;
+      if (generacion !== generacion_voz || !reproduccion_activa()) return;
       if (temporizador_avance !== null) window.clearTimeout(temporizador_avance);
       temporizador_avance = null;
       indice_unidad_rsvp = Math.max(0, unidades.length - 1);
+      indice_ventana_rsvp = Math.max(0, obtener_ventanas_rsvp_visual(unidades[indice_unidad_rsvp] ?? "").length - 1);
       actualizar_visor_rsvp();
       if (indice_fragmento >= fragmentos.length - 1) { detener_voz(); return; }
       indice_fragmento += 1;
       indice_unidad_rsvp = 0;
+      indice_ventana_rsvp = 0;
       guardar_posicion_actual();
       reproducir_rsvp();
     }, (duracion_segundos) => {
-      if (generacion !== generacion_voz || !reproduciendo) return;
+      if (generacion !== generacion_voz || !reproduccion_activa()) return;
+      estado_reproduccion = "reproduciendo";
+      actualizar_controles();
       actualizar_visor_rsvp();
-      const plan = calcular_plan_rsvp(restantes, duracion_segundos * 1_000);
-      programar_plan_rsvp_kokoro(plan, 1, indice_inicial, generacion);
-      preparar_audio_adelantado_kokoro(indice_fragmento + 1, "rsvp", generacion);
+      const ventanas = obtener_ventanas_rsvp_visual(unidades[indice_inicial] ?? "");
+      if (unidades.length === 1 && ventanas.length > 1) {
+        const plan = calcular_plan_rsvp(ventanas.map(({ texto }) => texto), duracion_segundos * 1_000);
+        programar_plan_visual_rsvp(plan, 1, generacion);
+      } else {
+        const plan = calcular_plan_rsvp(restantes, duracion_segundos * 1_000);
+        programar_plan_rsvp_kokoro(plan, 1, indice_inicial, generacion);
+      }
     });
   } catch (error) { detener_voz(); informar_error("Reproducción RSVP con Kokoro", error); }
-  finally { if (generacion === generacion_voz) { preparando_voz = false; actualizar_controles(); } }
+  finally { if (generacion === generacion_voz) actualizar_controles(); }
 }
 
 function reproducir_sin_voz(): void {
-  if (!reproduciendo || indice_fragmento >= fragmentos.length) { reproduciendo = false; actualizar_controles(); return; }
+  if (!reproduccion_activa() || indice_fragmento >= fragmentos.length) { estado_reproduccion = "detenido"; actualizar_controles(); return; }
   actualizar_resaltado();
   const texto = fragmentos[indice_fragmento]?.visible ?? "";
   const palabras = Math.max(1, texto.trim().split(/\s+/u).filter(Boolean).length);
@@ -1735,7 +1810,7 @@ function reproducir_sin_voz(): void {
   const duracion = Math.max(80, (palabras / perfil_actual.palabras_por_minuto) * 60_000 * pausa_puntuacion);
   programar_seguimiento_pdf(duracion, generacion_voz);
   temporizador_avance = window.setTimeout(() => {
-    if (!reproduciendo) return;
+    if (!reproduccion_activa()) return;
     if (indice_fragmento >= fragmentos.length - 1) { detener_voz(); return; }
     indice_fragmento += 1;
     guardar_posicion_actual();
@@ -1744,11 +1819,11 @@ function reproducir_sin_voz(): void {
 }
 
 function encolar_ventana_tts(generacion: number): void {
-  if (!window.speechSynthesis || generacion !== generacion_voz || !reproduciendo) return;
+  if (!window.speechSynthesis || generacion !== generacion_voz || !reproduccion_activa()) return;
   if (locuciones_pendientes > 0) return;
   const grupo = agrupar_locuciones(fragmentos, siguiente_indice_cola, 900, TAMANO_VENTANA_TTS);
   if (!grupo.tramos.length) {
-    if (locuciones_pendientes === 0) { reproduciendo = false; actualizar_controles(); }
+    if (locuciones_pendientes === 0) { estado_reproduccion = "detenido"; actualizar_controles(); }
     return;
   }
   siguiente_indice_cola = (grupo.tramos.at(-1)?.indice ?? siguiente_indice_cola) + 1;
@@ -1767,7 +1842,11 @@ function encolar_ventana_tts(generacion: number): void {
   };
   locucion.onstart = () => {
     const primero = grupo.tramos[0];
-    if (generacion === generacion_voz && primero) activar_indice(primero.indice, primero.inicio);
+    if (generacion === generacion_voz && primero) {
+      estado_reproduccion = "reproduciendo";
+      actualizar_controles();
+      activar_indice(primero.indice, primero.inicio);
+    }
   };
   locucion.onboundary = (evento) => {
     if (generacion !== generacion_voz) return;
@@ -1780,11 +1859,13 @@ function encolar_ventana_tts(generacion: number): void {
     encolar_ventana_tts(generacion);
   };
   locucion.onerror = () => { if (generacion === generacion_voz) detener_voz(); };
+  estado_reproduccion = "cargando";
+  actualizar_controles();
   window.speechSynthesis.speak(locucion);
 }
 
 function alternar_reproduccion(): void {
-  if (reproduciendo) { detener_voz(); return; }
+  if (reproduccion_activa()) { detener_voz(true, "pausado"); return; }
   reproducir_fragmento();
 }
 
@@ -1838,6 +1919,7 @@ function aplicar_estado_lectura(documento: DocumentoBiblioteca): void {
   indice_fragmento = estado ? Math.max(0, Math.trunc(estado.indice_fragmento)) : -1;
   pagina_pdf_actual = estado ? Math.max(1, Math.trunc(estado.pagina)) : 1;
   indice_unidad_rsvp = estado ? Math.max(0, Math.trunc(estado.indice_unidad)) : 0;
+  indice_ventana_rsvp = 0;
   indice_unidad_pdf = indice_unidad_rsvp;
   modo_visual_pdf = documento.formato === "PDF" && (estado?.modo_visual_pdf === "original" || estado?.modo_visual_pdf === "doble") ? estado.modo_visual_pdf : "texto";
   desplazamiento_pendiente = estado ? Math.max(0, estado.desplazamiento) : 0;
@@ -1857,6 +1939,7 @@ function mover_lector_a_fragmento(indice: number): void {
   autoscroll_suspendido = false;
   indice_fragmento = indice;
   indice_unidad_rsvp = 0;
+  indice_ventana_rsvp = 0;
   indice_fragmento_seguimiento_pdf = -1;
   indice_unidad_pdf = 0;
   unidades_seguimiento_pdf = [];
@@ -2249,6 +2332,21 @@ async function actualizar_biblioteca_nativa(): Promise<void> {
   if (vista_actual === "biblioteca") renderizar_biblioteca();
 }
 
+async function refrescar_biblioteca_nativa(): Promise<void> {
+  const boton = document.querySelector<HTMLButtonElement>("#refrescar-biblioteca");
+  if (boton) {
+    boton.disabled = true;
+    boton.setAttribute("aria-busy", "true");
+  }
+  try {
+    await actualizar_biblioteca_nativa();
+  } finally {
+    const boton_actual = document.querySelector<HTMLButtonElement>("#refrescar-biblioteca");
+    boton_actual?.removeAttribute("aria-busy");
+    if (boton_actual) boton_actual.disabled = false;
+  }
+}
+
 async function cargar_biblioteca_nativa(): Promise<void> {
   await actualizar_biblioteca_nativa();
   if (sesion_pestanas.activa) void abrir_documento(sesion_pestanas.activa);
@@ -2339,7 +2437,7 @@ async function ejecutar_importacion(tarea: () => Promise<void>, mensaje_error: s
   }
 }
 
-function actualizar_perfil(cambios: PerfilLecturaParcial, notificar = true): void {
+function actualizar_perfil(cambios: PerfilLecturaParcial, notificar = true, redibujar = true): void {
   perfil_actual = normalizar_perfil({
     ...perfil_actual,
     ...cambios,
@@ -2351,8 +2449,9 @@ function actualizar_perfil(cambios: PerfilLecturaParcial, notificar = true): voi
   persistencia.guardarPerfil(perfil_actual);
   if (notificar && isTauri()) void emit("perfil-actualizado", cambios).catch((error) => console.error("No fue posible sincronizar el perfil", error));
   aplicar_perfil();
+  if (cambios.maximo_palabras_rsvp_visibles !== undefined) actualizar_visor_rsvp();
   if (cambios.componentes && documento_actual) guardar_posicion_actual(true);
-  if (vista_actual === "lector" && (cambios.politica_matematica !== undefined || cambios.saltar_citas !== undefined || cambios.modo_lectura !== undefined || cambios.unidad_rsvp !== undefined)) {
+  if (redibujar && vista_actual === "lector" && (cambios.politica_matematica !== undefined || cambios.saltar_citas !== undefined || cambios.modo_lectura !== undefined || cambios.unidad_rsvp !== undefined)) {
     detener_voz();
     void renderizar_lector();
   }
@@ -2416,11 +2515,9 @@ async function establecer_asociacion_archivo(formato: EstadoAsociacionArchivo["f
 
 function actualizar_panel_perfil(): void {
   const tamano = document.querySelector<HTMLElement>("#valor-tamano");
-  const velocidad = document.querySelector<HTMLElement>("#valor-velocidad");
-  const palabras_rsvp = document.querySelector<HTMLElement>("#valor-palabras-minuto-rsvp");
   if (tamano) tamano.textContent = `${perfil_actual.tamano_fuente}px`;
-  if (velocidad) velocidad.textContent = `${perfil_actual.velocidad.toFixed(1)}×`;
-  if (palabras_rsvp) palabras_rsvp.textContent = `${perfil_actual.palabras_por_minuto_rsvp}`;
+  document.querySelectorAll<HTMLElement>("[data-valor-velocidad]").forEach((salida) => { salida.textContent = `${perfil_actual.velocidad.toFixed(1)}×`; });
+  document.querySelectorAll<HTMLElement>("[data-valor-palabras-minuto-rsvp]").forEach((salida) => { salida.textContent = `${perfil_actual.palabras_por_minuto_rsvp}`; });
   document.querySelectorAll<HTMLElement>("[data-valor-ritmo-general]").forEach((salida) => { salida.textContent = `${perfil_actual.ritmo_general.toFixed(1)}×`; });
   document.querySelectorAll<HTMLButtonElement>("[data-componente-interfaz]").forEach((boton) => {
     const componente = boton.dataset.componenteInterfaz as keyof PerfilLectura["componentes"];
@@ -2459,7 +2556,9 @@ function actualizar_panel_perfil(): void {
   document.querySelectorAll<HTMLElement>("[data-velocidad-maestra]").forEach((elemento) => { elemento.hidden = !perfil_actual.velocidades_sincronizadas; });
   document.querySelectorAll<HTMLElement>("[data-velocidades-separadas]").forEach((elemento) => { elemento.hidden = perfil_actual.velocidades_sincronizadas; });
   document.querySelectorAll<HTMLElement>("[data-velocidad-voz-individual]").forEach((elemento) => { elemento.hidden = perfil_actual.velocidades_sincronizadas || !perfil_actual.voz_habilitada; });
-  document.querySelectorAll<HTMLElement>("[data-velocidad-visual-inferior]").forEach((elemento) => { elemento.hidden = perfil_actual.velocidades_sincronizadas || perfil_actual.voz_habilitada; });
+  document.querySelectorAll<HTMLElement>("[data-velocidad-voz-inferior]").forEach((elemento) => { elemento.hidden = perfil_actual.velocidades_sincronizadas || !perfil_actual.voz_habilitada; });
+  document.querySelectorAll<HTMLElement>("[data-velocidad-visual-inferior]").forEach((elemento) => { elemento.hidden = perfil_actual.velocidades_sincronizadas || perfil_actual.voz_habilitada || perfil_actual.modo_lectura === "rsvp"; });
+  document.querySelectorAll<HTMLElement>("[data-velocidad-rsvp-inferior]").forEach((elemento) => { elemento.hidden = perfil_actual.velocidades_sincronizadas || perfil_actual.voz_habilitada || perfil_actual.modo_lectura !== "rsvp"; });
   const idioma = document.querySelector<HTMLSelectElement>("#idioma-voz");
   const voz = document.querySelector<HTMLSelectElement>("#voz-base");
   if (idioma) idioma.value = perfil_actual.idioma_voz;
@@ -2482,15 +2581,18 @@ function sincronizar_campos_perfil(): void {
     ["ritmo-general-inferior", perfil_actual.ritmo_general],
     ["velocidades-sincronizadas", perfil_actual.velocidades_sincronizadas],
     ["velocidad", perfil_actual.velocidad],
+    ["velocidad-inferior", perfil_actual.velocidad],
     ["palabras-minuto", perfil_actual.palabras_por_minuto],
     ["palabras-minuto-inferior", perfil_actual.palabras_por_minuto],
     ["palabras-minuto-rsvp", perfil_actual.palabras_por_minuto_rsvp],
+    ["palabras-minuto-rsvp-inferior", perfil_actual.palabras_por_minuto_rsvp],
     ["matematica", perfil_actual.politica_matematica],
     ["saltar-citas", perfil_actual.saltar_citas],
     ["auto-scroll", perfil_actual.auto_scroll],
     ["voz-habilitada", perfil_actual.voz_habilitada],
     ["modo-lectura-selector", perfil_actual.modo_lectura],
     ["unidad-rsvp", perfil_actual.unidad_rsvp],
+    ["maximo-palabras-rsvp-visibles", perfil_actual.maximo_palabras_rsvp_visibles],
   ];
   valores.forEach(([id, valor]) => {
     const control = document.querySelector<HTMLInputElement | HTMLSelectElement>(`#${id}`);
@@ -2589,7 +2691,13 @@ function usar_motor_voz(motor: string): void {
   if (motor === "kokoro_onnx" && kokoro_instalado) {
     const configuracion = normalizar_configuracion_kokoro(perfil_actual.idioma_voz, perfil_actual.voz_base);
     actualizar_perfil({ motor_voz: "kokoro_onnx", idioma_voz: configuracion.idioma, voz_base: configuracion.voz });
+    precalentar_kokoro();
   }
+}
+
+function precalentar_kokoro(): void {
+  if (!isTauri() || !kokoro_instalado || perfil_actual.motor_voz !== "kokoro_onnx") return;
+  void invoke("preparar_kokoro").catch(() => undefined);
 }
 
 function alternar_repositorio_voz(control: HTMLInputElement): void {
@@ -2614,6 +2722,7 @@ async function actualizar_estado_kokoro(): Promise<void> {
     kokoro_instalado = estado.instalado;
   } catch { kokoro_instalado = false; }
   actualizar_panel_perfil();
+  precalentar_kokoro();
 }
 
 function establecer_velocidad(velocidad: number): void {
@@ -2621,9 +2730,22 @@ function establecer_velocidad(velocidad: number): void {
 }
 
 function aplicar_cambio_velocidades(cambios: PerfilLecturaParcial): void {
-  const continuar = reproduciendo;
-  detener_voz();
+  const continuar = reproduccion_activa();
+  const estaba_pausada = estado_reproduccion === "pausado";
+  detener_voz(true, estaba_pausada ? "pausado" : "detenido");
   actualizar_perfil(cambios);
+  if (continuar) reproducir_fragmento();
+}
+
+function ajustar_velocidad_activa(direccion: -1 | 1): void {
+  aplicar_cambio_velocidades(cambio_velocidad_reproduccion(perfil_actual, direccion));
+}
+
+function establecer_voz_habilitada(habilitada: boolean): void {
+  const continuar = reproduccion_activa();
+  const estaba_pausada = estado_reproduccion === "pausado";
+  detener_voz(true, estaba_pausada ? "pausado" : "detenido");
+  actualizar_perfil({ voz_habilitada: habilitada });
   if (continuar) reproducir_fragmento();
 }
 
@@ -2649,9 +2771,15 @@ function alternar_sincronizacion_velocidades(sincronizadas: boolean): void {
 
 function actualizar_controles(): void {
   const titulo = document.querySelector<HTMLElement>("#documento-actual");
-  const boton = document.querySelector<HTMLElement>("#reproducir");
+  const boton = document.querySelector<HTMLButtonElement>("#reproducir");
+  const estado = document.querySelector<HTMLElement>("#estado-reproduccion");
   if (titulo) titulo.textContent = documento_actual?.titulo ?? "Ningún documento abierto";
-  if (boton) { boton.textContent = reproduciendo ? "Ⅱ" : "▶"; boton.setAttribute("aria-label", preparando_voz ? "Cancelar preparación de voz" : reproduciendo ? "Pausar" : "Reproducir"); }
+  if (boton) {
+    boton.textContent = reproduccion_activa() ? "Ⅱ" : "▶";
+    boton.dataset.estado = estado_reproduccion;
+    boton.setAttribute("aria-label", estado_reproduccion === "cargando" ? "Cancelar preparación de voz" : estado_reproduccion === "reproduciendo" ? "Pausar" : estado_reproduccion === "pausado" ? "Reanudar" : "Reproducir");
+  }
+  if (estado) estado.textContent = estado_reproduccion === "cargando" ? "Cargando" : estado_reproduccion === "reproduciendo" ? "Reproduciendo" : estado_reproduccion === "pausado" ? "Pausado" : "Detenido";
   actualizar_herramientas_pdf();
 }
 
@@ -2675,6 +2803,9 @@ function ejecutar_atajo(accion: AccionAtajo): void {
   if (accion === "reproducir") alternar_reproduccion();
   if (accion === "anterior") avanzar_fragmento(-1);
   if (accion === "siguiente") avanzar_fragmento(1);
+  if (accion === "alternar_voz") establecer_voz_habilitada(!perfil_actual.voz_habilitada);
+  if (accion === "aumentar_velocidad") ajustar_velocidad_activa(1);
+  if (accion === "reducir_velocidad") ajustar_velocidad_activa(-1);
   if (accion === "modo_enfoque") actualizar_perfil({ modo_enfoque: !perfil_actual.modo_enfoque });
   if (accion === "alternar_pdf" && documento_actual?.formato === "PDF") {
     const siguiente: ModoVisualPdf = modo_visual_pdf === "texto" ? "original" : modo_visual_pdf === "original" ? "doble" : "texto";
@@ -2689,9 +2820,9 @@ function montar_aplicacion(): void {
   aplicacion.innerHTML = `<div class="aplicacion"><header class="barra-superior">
     <nav class="pestanas" aria-label="Documentos abiertos"><button class="pestana activa" data-vista="biblioteca">Biblioteca</button><span id="pestanas-documentos" class="pestanas-documentos" role="tablist"></span></nav>
     <div class="acciones-superiores"><span id="estado-mosaico" class="estado-mosaico" role="status" aria-live="polite"></span><button id="modo-enfoque" class="boton">Modo lectura</button><input id="archivo" class="oculto" type="file" accept=".pdf,.epub,.md,.markdown" multiple></div><div class="busqueda-global" role="search" aria-label="Buscar en la vista actual" hidden><input id="busqueda-global" type="search" placeholder="Buscar" aria-label="Texto que buscar"><span id="estado-busqueda-global" aria-live="polite"></span><button id="busqueda-anterior" aria-label="Resultado anterior">↑</button><button id="busqueda-siguiente" aria-label="Resultado siguiente">↓</button><button id="cerrar-busqueda-global" aria-label="Cerrar búsqueda">×</button></div></header>
-    <div class="contenido"><aside id="panel-biblioteca" class="panel" aria-label="Biblioteca"><button id="alternar-panel-biblioteca" class="flecha-panel flecha-panel-izquierda" aria-label="Ocultar biblioteca">‹</button><div class="panel-contenido"><header class="cabecera-panel-contextual"><h2 id="titulo-panel-izquierdo">Biblioteca</h2></header><div id="contenido-biblioteca"><section class="panel-seccion"><div class="encabezado-panel"><h2 class="panel-titulo">Organización</h2><button id="abrir-carpeta-finder" class="agregar-biblioteca" aria-label="Mostrar biblioteca en Finder" title="Mostrar biblioteca en Finder"><svg class="icono-carpeta-finder" aria-hidden="true" viewBox="0 0 24 24"><path d="M3.5 7.5h6l2-2h9v13h-17z"/></svg></button></div><nav id="navegacion-biblioteca" class="navegacion"></nav></section>
+    <div class="contenido"><aside id="panel-biblioteca" class="panel" aria-label="Biblioteca"><button id="alternar-panel-biblioteca" class="flecha-panel flecha-panel-izquierda" aria-label="Ocultar biblioteca">‹</button><div class="panel-contenido"><header class="cabecera-panel-contextual"><h2 id="titulo-panel-izquierdo">Biblioteca</h2></header><div id="contenido-biblioteca"><section class="panel-seccion"><div class="encabezado-panel"><h2 class="panel-titulo">Organización</h2><div class="acciones-biblioteca"><button id="abrir-carpeta-finder" class="agregar-biblioteca" aria-label="Mostrar biblioteca en Finder" title="Mostrar biblioteca en Finder"><svg class="icono-carpeta-finder" aria-hidden="true" viewBox="0 0 24 24"><path d="M3.5 7.5h6l2-2h9v13h-17z"/></svg></button><button id="refrescar-biblioteca" class="refrescar-biblioteca" aria-label="Refrescar biblioteca" title="Refrescar biblioteca"><svg class="icono-refrescar-biblioteca" aria-hidden="true" viewBox="0 0 24 24"><path d="M19 8a7 7 0 1 0 1.2 7.8"/><path d="M19 3v5h-5"/></svg></button></div></div><nav id="navegacion-biblioteca" class="navegacion"></nav></section>
     <section class="panel-seccion"><h2 class="panel-titulo">Carpetas</h2><nav id="carpetas-biblioteca" class="navegacion"></nav></section></div><section id="contenido-indice" class="panel-seccion" hidden></section>
-    </div></aside><section id="vista-principal" class="vista-principal"></section><aside id="panel-inspector" class="panel panel-derecho" aria-label="${ES_VENTANA_PREFERENCIAS ? "Configuración" : "Libreta"}"><button id="alternar-panel-inspector" class="flecha-panel flecha-panel-derecha" aria-label="Ocultar Libreta">›</button><div class="panel-contenido"><header class="cabecera-preferencias"><h1 id="titulo-preferencias" tabindex="-1">Configuración</h1><p>Preferencias locales de Carlector</p></header><div id="contenido-perfil" hidden><details id="configuracion-interfaz" class="panel-seccion grupo-configuracion" open><summary>Interfaz</summary><div class="contenido-grupo-configuracion">
+    </div></aside><section id="vista-principal" class="vista-principal"></section><aside id="panel-inspector" class="panel panel-derecho" aria-label="${ES_VENTANA_PREFERENCIAS ? "Configuración" : "Libreta"}"><button id="alternar-panel-inspector" class="flecha-panel flecha-panel-derecha" aria-label="Ocultar Libreta">›</button><div class="panel-contenido"><header class="cabecera-preferencias"><h1 id="titulo-preferencias" tabindex="-1">Configuración</h1><p>Preferencias locales de Carlector</p></header><div id="contenido-perfil" hidden><details id="configuracion-interfaz" class="panel-seccion grupo-configuracion"><summary>Interfaz</summary><div class="contenido-grupo-configuracion">
     <div class="lista-visibilidad-interfaz" aria-label="Elementos visibles">${crear_controles_interfaz()}</div>
     <fieldset class="dimensiones-interfaz"><legend>Dimensiones</legend>
     <div class="campo"><div class="campo-linea"><label for="ancho-biblioteca">Ancho Biblioteca</label><output id="valor-ancho-biblioteca"></output></div><input id="ancho-biblioteca" data-disposicion-interfaz="ancho_biblioteca" type="range" min="180" max="420" step="1"></div>
@@ -2709,20 +2840,28 @@ function montar_aplicacion(): void {
     <div><strong>Markdown</strong><span data-estado-asociacion="markdown">Comprobando…</span><button class="boton" type="button" data-establecer-asociacion="markdown">Usar Carlector</button></div>
     </div><p id="estado-asociaciones-archivo" role="status" aria-live="polite"></p></div></details>
     <details id="configuracion-biblioteca" class="panel-seccion grupo-configuracion"><summary>Biblioteca</summary><div class="contenido-grupo-configuracion"><p class="ayuda-campo">${Math.max(0, documentos.length - 1)} documentos y ${carpetas.length} carpetas locales. La organización no mueve ni elimina originales.</p></div></details>
-    <details id="configuracion-lectura" class="panel-seccion grupo-configuracion" open><summary>Lectura</summary><div class="contenido-grupo-configuracion">
+    <details id="configuracion-lectura" class="panel-seccion grupo-configuracion"><summary>Lectura</summary><div class="contenido-grupo-configuracion">
     <div class="campo"><label for="modo-lectura-selector">Presentación</label><select id="modo-lectura-selector"><option value="continua">Lectura continua</option><option value="rsvp">RSVP centrado</option></select></div>
     <div class="campo" data-solo-rsvp><label for="unidad-rsvp">Unidad RSVP</label><select id="unidad-rsvp"><option value="palabra">Una palabra</option><option value="frase">Frase</option></select></div>
+    <div class="campo" data-solo-rsvp><label for="maximo-palabras-rsvp-visibles">Palabras visibles en RSVP</label><input id="maximo-palabras-rsvp-visibles" type="number" min="1" max="20" step="1" value="${perfil_actual.maximo_palabras_rsvp_visibles}" aria-describedby="ayuda-maximo-palabras-rsvp-visibles"><p id="ayuda-maximo-palabras-rsvp-visibles" class="ayuda-campo">Solo limita la vista. No corta lectura ni voz.</p></div>
     <div class="campo campo-linea"><label for="velocidades-sincronizadas">Sincronizar velocidades</label><input id="velocidades-sincronizadas" class="interruptor" type="checkbox" aria-describedby="ayuda-sincronizacion-velocidades"></div>
     <p id="ayuda-sincronizacion-velocidades" class="ayuda-campo">Un ritmo controla voz, lectura continua y RSVP. Al separarlas, cada velocidad conserva su valor.</p>
     <div class="control-velocidad-voz" data-velocidad-maestra><label for="ritmo-general">Ritmo general</label><div class="velocidad-linea"><button id="ritmo-menos" class="velocidad-ajuste" aria-label="Reducir ritmo general en 0.1">−</button><input id="ritmo-general" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.ritmo_general}"><button id="ritmo-mas" class="velocidad-ajuste" aria-label="Aumentar ritmo general en 0.1">+</button><span data-valor-ritmo-general></span></div><div class="velocidades-rapidas"><button data-ritmo-general="1">1×</button><button data-ritmo-general="1.5">1.5×</button><button data-ritmo-general="2">2×</button></div></div>
     <div class="control-velocidad-voz" data-velocidades-separadas><label for="palabras-minuto">Lectura continua sin voz</label><div class="velocidad-linea"><button id="palabras-config-menos" class="velocidad-ajuste" aria-label="Reducir velocidad de lectura continua">−</button><input id="palabras-minuto" type="range" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto}"><button id="palabras-config-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad de lectura continua">+</button><span data-valor-palabras-minuto></span></div></div>
-    <div class="control-velocidad-voz" data-velocidades-separadas><label for="palabras-minuto-rsvp">RSVP sin voz</label><div class="velocidad-linea"><button id="rsvp-minuto-menos" class="velocidad-ajuste" aria-label="Reducir velocidad RSVP">−</button><input id="palabras-minuto-rsvp" type="range" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto_rsvp}"><button id="rsvp-minuto-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad RSVP">+</button><span id="valor-palabras-minuto-rsvp"></span></div></div>
+    <div class="control-velocidad-voz" data-velocidades-separadas><label for="palabras-minuto-rsvp">RSVP sin voz</label><div class="velocidad-linea"><button id="rsvp-minuto-menos" class="velocidad-ajuste" aria-label="Reducir velocidad RSVP">−</button><input id="palabras-minuto-rsvp" type="range" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto_rsvp}"><button id="rsvp-minuto-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad RSVP">+</button><span id="valor-palabras-minuto-rsvp" data-valor-palabras-minuto-rsvp></span></div></div>
     <details class="menu-omisiones-voz"><summary>Contenido en voz</summary><div class="contenido-menu-omisiones"><div class="campo"><label for="matematica">Matemática en voz</label><select id="matematica"><option value="leer">Leer</option><option value="omitir">Omitir</option><option value="indicar">Decir «ecuación»</option></select></div><fieldset class="lista-omisiones-voz"><legend>Omitir al leer</legend><label><input id="saltar-citas" type="checkbox"> Citas bibliográficas</label><label><input type="checkbox" checked disabled> Símbolos ilegibles</label></fieldset></div></details>
     <div class="campo campo-linea"><label for="auto-scroll">Auto-scroll</label><input id="auto-scroll" class="interruptor" type="checkbox"></div></div></details>
-    <details id="configuracion-voz" class="panel-seccion grupo-configuracion" open><summary><span>Voz</span><button id="abrir-repositorios-voz" class="boton-biblioteca-temas" aria-label="Administrar repositorios de voz" title="Repositorios de voz">⬡</button></summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea campo-voz-habilitada"><label for="voz-habilitada">Voz habilitada</label><input id="voz-habilitada" class="interruptor" type="checkbox"></div><div class="campo"><label for="motor-voz">Motor</label><select id="motor-voz"><option value="sistema">TTS del sistema · experimental</option><option value="kokoro_onnx" ${kokoro_instalado ? "" : "disabled"}>Kokoro ONNX${kokoro_instalado ? " · verificado" : " · no instalado"}</option></select></div><div class="campo" data-solo-kokoro><label for="idioma-voz">Paquete de idioma</label><select id="idioma-voz"><option value="es">Español genérico</option><option value="en-us">Inglés · Estados Unidos</option><option value="en-gb">Inglés · Reino Unido</option></select></div><div class="campo" data-solo-kokoro><label for="voz-base">Voz compatible</label><select id="voz-base"></select></div><div class="control-velocidad-voz" data-velocidad-voz-individual><label for="velocidad">Velocidad de reproducción</label><div class="velocidad-linea"><button id="velocidad-menos" class="velocidad-ajuste" aria-label="Reducir velocidad en 0.1">−</button><input id="velocidad" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.velocidad}"><button id="velocidad-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad en 0.1">+</button><span id="valor-velocidad"></span></div><div class="velocidades-rapidas"><button data-velocidad="1">1×</button><button data-velocidad="1.5">1.5×</button><button data-velocidad="2">2×</button></div></div><p class="ayuda-campo" data-solo-kokoro>Idioma y voz se sincronizan automáticamente para evitar combinaciones incompatibles.</p></div></details><details id="configuracion-avanzada" class="panel-seccion grupo-configuracion"><summary>Avanzado</summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea"><label for="mostrar-informes-error">Mostrar informes de error</label><input id="mostrar-informes-error" class="interruptor" type="checkbox" ${informes_error_habilitados ? "checked" : ""}></div><fieldset class="atajos-configurables"><legend>Atajos de teclado</legend>${Object.entries(ETIQUETAS_ATAJOS).map(([accion, etiqueta]) => `<label for="atajo-${accion}">${etiqueta}</label><input id="atajo-${accion}" data-atajo="${accion}" value="${describir_atajo(perfil_actual.atajos[accion as AccionAtajo])}" readonly aria-describedby="ayuda-atajos estado-atajos">`).join("")}<p id="ayuda-atajos">Selecciona un campo y pulsa la combinación nueva. Escape cancela.</p><p id="estado-atajos" role="status"></p><button id="restaurar-atajos" class="boton" type="button">Restaurar atajos</button></fieldset></div></details></div><div id="ubicacion-libreta-panel"><section id="contenido-fragmentos" class="panel-seccion"></section></div></div></aside></div>
+    <details id="configuracion-voz" class="panel-seccion grupo-configuracion"><summary><span>Voz</span><button id="abrir-repositorios-voz" class="boton-biblioteca-temas" aria-label="Administrar repositorios de voz" title="Repositorios de voz">⬡</button></summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea campo-voz-habilitada"><label for="voz-habilitada">Voz habilitada</label><input id="voz-habilitada" class="interruptor" type="checkbox"></div><div class="campo"><label for="motor-voz">Motor</label><select id="motor-voz"><option value="sistema">TTS del sistema · experimental</option><option value="kokoro_onnx" ${kokoro_instalado ? "" : "disabled"}>Kokoro ONNX${kokoro_instalado ? " · verificado" : " · no instalado"}</option></select></div><div class="campo" data-solo-kokoro><label for="idioma-voz">Paquete de idioma</label><select id="idioma-voz"><option value="es">Español genérico</option><option value="en-us">Inglés · Estados Unidos</option><option value="en-gb">Inglés · Reino Unido</option></select></div><div class="campo" data-solo-kokoro><label for="voz-base">Voz compatible</label><select id="voz-base"></select></div><div class="control-velocidad-voz" data-velocidad-voz-individual><label for="velocidad">Velocidad de reproducción</label><div class="velocidad-linea"><button id="velocidad-menos" class="velocidad-ajuste" aria-label="Reducir velocidad en 0.1">−</button><input id="velocidad" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.velocidad}"><button id="velocidad-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad en 0.1">+</button><span id="valor-velocidad" data-valor-velocidad></span></div><div class="velocidades-rapidas"><button data-velocidad="1">1×</button><button data-velocidad="1.5">1.5×</button><button data-velocidad="2">2×</button></div></div><p class="ayuda-campo" data-solo-kokoro>Idioma y voz se sincronizan automáticamente para evitar combinaciones incompatibles.</p></div></details><details id="configuracion-avanzada" class="panel-seccion grupo-configuracion"><summary>Avanzado</summary><div class="contenido-grupo-configuracion"><div class="campo campo-linea"><label for="mostrar-informes-error">Mostrar informes de error</label><input id="mostrar-informes-error" class="interruptor" type="checkbox" ${informes_error_habilitados ? "checked" : ""}></div><fieldset class="atajos-configurables"><legend>Atajos de teclado</legend>${Object.entries(ETIQUETAS_ATAJOS).map(([accion, etiqueta]) => `<label for="atajo-${accion}">${etiqueta}</label><input id="atajo-${accion}" data-atajo="${accion}" value="${describir_atajo(perfil_actual.atajos[accion as AccionAtajo])}" readonly aria-describedby="ayuda-atajos estado-atajos">`).join("")}<p id="ayuda-atajos">Selecciona un campo y pulsa la combinación nueva. Escape cancela.</p><p id="estado-atajos" role="status"></p><button id="restaurar-atajos" class="boton" type="button">Restaurar atajos</button></fieldset></div></details></div><div id="ubicacion-libreta-panel"><section id="contenido-fragmentos" class="panel-seccion"></section></div></div></aside></div>
     <div id="menu-agregar" class="menu-agregar" hidden><button id="anadir-archivo">Añadir archivo</button><button id="crear-carpeta">Crear carpeta</button></div><div id="menu-contextual" class="menu-agregar menu-contextual" hidden></div><section id="biblioteca-temas" class="modal-temas" hidden><div class="dialogo-temas"><header><div><h2>Biblioteca de temas</h2><p>Paletas locales para lectura e interfaz</p></div><button id="cerrar-biblioteca-temas" aria-label="Cerrar">×</button></header><div id="lista-biblioteca-temas" class="lista-biblioteca-temas"></div><footer><button id="guardar-tema-actual" class="boton primario">Guardar tema actual</button></footer></div></section><section id="repositorios-voz" class="modal-temas" hidden><div class="dialogo-temas dialogo-repositorios"><header><h2>Repositorios de voz</h2><button id="cerrar-repositorios-voz" aria-label="Cerrar">×</button></header><div id="lista-repositorios-voz" class="lista-repositorios-voz"></div><footer><button id="actualizar-estado-voz" class="boton">Comprobar estado</button></footer></div></section>
     <section id="libreta-flotante" class="libreta-flotante" aria-labelledby="titulo-libreta-flotante" hidden><header id="asa-libreta-flotante"><strong id="titulo-libreta-flotante">Libreta</strong><button class="boton exportar-libreta-pdf" data-exportar-libreta-pdf type="button" disabled>Exportar PDF…</button><button id="cerrar-libreta-flotante" aria-label="Cerrar Libreta flotante">×</button></header><div id="contenido-libreta-flotante" class="contenido-libreta-flotante"></div><button id="asa-redimension-libreta" class="asa-redimension-libreta" type="button" aria-label="Ajustar tamaño de Libreta con arrastre o flechas" title="Arrastra para ajustar tamaño">◢</button></section><section id="informador-error" class="informador-error" role="alertdialog" aria-labelledby="error-contexto" aria-describedby="error-detalle" hidden><div><header><strong id="error-contexto">Error de Carlector</strong><button id="cerrar-informador-error" aria-label="Cerrar">×</button></header><p id="error-detalle"></p><small id="error-fecha"></small><footer><label><input id="no-mostrar-errores" type="checkbox"> No volver a mostrar</label><button id="aceptar-informador-error" class="boton primario">Cerrar</button></footer></div></section><section id="carga-importacion" class="carga-importacion" role="status" aria-live="polite" hidden><strong>Cargando biblioteca</strong><span id="carga-nombre"></span><progress id="carga-progreso" max="100"></progress><small id="carga-estado"></small></section><button id="salir-modo-enfoque" type="button" aria-label="Salir del modo lectura">×</button>
-    <footer class="control-inferior"><div class="control-documento"><strong id="documento-actual"></strong></div><div class="reproductor"><button id="anterior" class="boton-icono" aria-label="Fragmento anterior">←</button><button id="reproducir" class="reproducir" aria-label="Reproducir" title="Reproducir o pausar · Space">▶</button><button id="siguiente" class="boton-icono" aria-label="Fragmento siguiente">→</button></div><div class="control-velocidad" data-velocidad-maestra><div class="velocidad-linea"><button id="ritmo-inferior-menos" class="velocidad-ajuste" aria-label="Reducir ritmo general en 0.1">−</button><input id="ritmo-general-inferior" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.ritmo_general}"><button id="ritmo-inferior-mas" class="velocidad-ajuste" aria-label="Aumentar ritmo general en 0.1">+</button><span data-valor-ritmo-general></span></div><div class="velocidades-rapidas"><button data-ritmo-general="1">1×</button><button data-ritmo-general="1.5">1.5×</button><button data-ritmo-general="2">2×</button></div></div><div class="control-velocidad" data-velocidad-visual-inferior><div class="velocidad-linea"><button id="palabras-inferior-menos" class="velocidad-ajuste" aria-label="Reducir palabras por minuto">−</button><input id="palabras-minuto-inferior" type="range" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto}"><button id="palabras-inferior-mas" class="velocidad-ajuste" aria-label="Aumentar palabras por minuto">+</button><span data-valor-palabras-minuto></span></div><div class="velocidades-rapidas"><button data-palabras-minuto="200">200</button><button data-palabras-minuto="300">300</button><button data-palabras-minuto="450">450</button></div></div></footer></div>`;
+    <footer class="control-inferior">
+      <div class="control-documento"><strong id="documento-actual"></strong></div>
+      <div class="reproductor"><button id="anterior" class="boton-icono" aria-label="Fragmento anterior">←</button><div class="control-reproduccion-central"><button id="reproducir" class="reproducir" aria-label="Reproducir" title="Reproducir o pausar · Space">▶</button><span id="estado-reproduccion" class="solo-lector-pantalla" role="status" aria-live="polite">Detenido</span></div><button id="siguiente" class="boton-icono" aria-label="Fragmento siguiente">→</button></div>
+      <div class="control-velocidad" data-velocidad-maestra><div class="velocidad-linea"><button id="ritmo-inferior-menos" class="velocidad-ajuste" aria-label="Reducir ritmo general en 0.1">−</button><input id="ritmo-general-inferior" aria-label="Ritmo general" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.ritmo_general}"><button id="ritmo-inferior-mas" class="velocidad-ajuste" aria-label="Aumentar ritmo general en 0.1">+</button><span data-valor-ritmo-general></span></div><div class="velocidades-rapidas"><button data-ritmo-general="1">1×</button><button data-ritmo-general="1.5">1.5×</button><button data-ritmo-general="2">2×</button></div></div>
+      <div class="control-velocidad" data-velocidad-voz-inferior><div class="velocidad-linea"><button id="velocidad-inferior-menos" class="velocidad-ajuste" aria-label="Reducir velocidad de voz en 0.1">−</button><input id="velocidad-inferior" aria-label="Velocidad de voz" type="range" min="0.5" max="3" step="0.1" value="${perfil_actual.velocidad}"><button id="velocidad-inferior-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad de voz en 0.1">+</button><span data-valor-velocidad></span></div><div class="velocidades-rapidas"><button data-velocidad="1">1×</button><button data-velocidad="1.5">1.5×</button><button data-velocidad="2">2×</button></div></div>
+      <div class="control-velocidad" data-velocidad-visual-inferior><div class="velocidad-linea"><button id="palabras-inferior-menos" class="velocidad-ajuste" aria-label="Reducir palabras por minuto">−</button><input id="palabras-minuto-inferior" aria-label="Velocidad de lectura continua" type="range" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto}"><button id="palabras-inferior-mas" class="velocidad-ajuste" aria-label="Aumentar palabras por minuto">+</button><span data-valor-palabras-minuto></span></div><div class="velocidades-rapidas"><button data-palabras-minuto="200">200</button><button data-palabras-minuto="300">300</button><button data-palabras-minuto="450">450</button></div></div>
+      <div class="control-velocidad" data-velocidad-rsvp-inferior><div class="velocidad-linea"><button id="rsvp-inferior-menos" class="velocidad-ajuste" aria-label="Reducir velocidad RSVP">−</button><input id="palabras-minuto-rsvp-inferior" aria-label="Velocidad RSVP" type="range" min="60" max="1200" step="10" value="${perfil_actual.palabras_por_minuto_rsvp}"><button id="rsvp-inferior-mas" class="velocidad-ajuste" aria-label="Aumentar velocidad RSVP">+</button><span data-valor-palabras-minuto-rsvp></span></div></div>
+    </footer></div>`;
   const contenido_perfil = document.querySelector<HTMLElement>("#contenido-perfil");
   const ubicacion_libreta_panel = document.querySelector<HTMLElement>("#ubicacion-libreta-panel");
   const cabecera_preferencias = document.querySelector<HTMLElement>(".cabecera-preferencias");
@@ -2788,6 +2927,9 @@ function montar_aplicacion(): void {
   document.querySelector("#cerrar-busqueda-global")?.addEventListener("click", () => cerrar_busqueda_global());
   document.querySelector("#abrir-carpeta-finder")?.addEventListener("click", () => {
     if (isTauri()) void ejecutar_importacion(abrir_biblioteca_en_finder, "No fue posible abrir la Biblioteca en Finder");
+  });
+  document.querySelector("#refrescar-biblioteca")?.addEventListener("click", () => {
+    if (isTauri()) void ejecutar_importacion(refrescar_biblioteca_nativa, "No fue posible refrescar la Biblioteca");
   });
   document.querySelector<HTMLElement>("#contenido-biblioteca")?.addEventListener("contextmenu", (evento) => {
     if (evento.target instanceof Element && evento.target.closest("[data-carpeta]")) return;
@@ -2881,7 +3023,8 @@ function montar_aplicacion(): void {
   document.querySelector<HTMLInputElement>("#auto-scroll")?.addEventListener("change", (evento) => actualizar_perfil({ auto_scroll: (evento.currentTarget as HTMLInputElement).checked }));
   document.querySelector<HTMLSelectElement>("#modo-lectura-selector")?.addEventListener("change", (evento) => actualizar_perfil({ modo_lectura: (evento.currentTarget as HTMLSelectElement).value as PerfilLectura["modo_lectura"] }));
   document.querySelector<HTMLSelectElement>("#unidad-rsvp")?.addEventListener("change", (evento) => actualizar_perfil({ unidad_rsvp: (evento.currentTarget as HTMLSelectElement).value as PerfilLectura["unidad_rsvp"] }));
-  document.querySelector<HTMLInputElement>("#voz-habilitada")?.addEventListener("change", (evento) => { const continuar = reproduciendo; detener_voz(); actualizar_perfil({ voz_habilitada: (evento.currentTarget as HTMLInputElement).checked }); if (continuar) reproducir_fragmento(); });
+  document.querySelector<HTMLInputElement>("#maximo-palabras-rsvp-visibles")?.addEventListener("input", (evento) => actualizar_perfil({ maximo_palabras_rsvp_visibles: Number((evento.currentTarget as HTMLInputElement).value) }));
+  document.querySelector<HTMLInputElement>("#voz-habilitada")?.addEventListener("change", (evento) => establecer_voz_habilitada((evento.currentTarget as HTMLInputElement).checked));
   document.querySelector<HTMLSelectElement>("#motor-voz")?.addEventListener("change", (evento) => usar_motor_voz((evento.currentTarget as HTMLSelectElement).value));
   document.querySelector<HTMLSelectElement>("#idioma-voz")?.addEventListener("change", (evento) => actualizar_idioma_kokoro((evento.currentTarget as HTMLSelectElement).value));
   document.querySelector<HTMLSelectElement>("#voz-base")?.addEventListener("change", (evento) => { detener_voz(); actualizar_perfil({ voz_base: (evento.currentTarget as HTMLSelectElement).value }); });
@@ -2894,12 +3037,12 @@ function montar_aplicacion(): void {
   document.querySelectorAll("#palabras-config-menos, #palabras-inferior-menos").forEach((boton) => boton.addEventListener("click", () => establecer_palabras_por_minuto(ajustar_palabras_por_minuto(perfil_actual.palabras_por_minuto, -10))));
   document.querySelectorAll("#palabras-config-mas, #palabras-inferior-mas").forEach((boton) => boton.addEventListener("click", () => establecer_palabras_por_minuto(ajustar_palabras_por_minuto(perfil_actual.palabras_por_minuto, 10))));
   document.querySelectorAll<HTMLButtonElement>("[data-palabras-minuto]").forEach((boton) => boton.addEventListener("click", () => establecer_palabras_por_minuto(Number(boton.dataset.palabrasMinuto))));
-  document.querySelector<HTMLInputElement>("#palabras-minuto-rsvp")?.addEventListener("input", (evento) => establecer_palabras_por_minuto_rsvp(Number((evento.currentTarget as HTMLInputElement).value)));
-  document.querySelector("#rsvp-minuto-menos")?.addEventListener("click", () => establecer_palabras_por_minuto_rsvp(ajustar_palabras_por_minuto(perfil_actual.palabras_por_minuto_rsvp, -10)));
-  document.querySelector("#rsvp-minuto-mas")?.addEventListener("click", () => establecer_palabras_por_minuto_rsvp(ajustar_palabras_por_minuto(perfil_actual.palabras_por_minuto_rsvp, 10)));
-  document.querySelector<HTMLInputElement>("#velocidad")?.addEventListener("input", (evento) => establecer_velocidad(Number((evento.currentTarget as HTMLInputElement).value)));
-  document.querySelector("#velocidad-menos")?.addEventListener("click", () => establecer_velocidad(ajustar_velocidad(perfil_actual.velocidad, -0.1)));
-  document.querySelector("#velocidad-mas")?.addEventListener("click", () => establecer_velocidad(ajustar_velocidad(perfil_actual.velocidad, 0.1)));
+  document.querySelectorAll<HTMLInputElement>("#palabras-minuto-rsvp, #palabras-minuto-rsvp-inferior").forEach((control) => control.addEventListener("input", (evento) => establecer_palabras_por_minuto_rsvp(Number((evento.currentTarget as HTMLInputElement).value))));
+  document.querySelectorAll("#rsvp-minuto-menos, #rsvp-inferior-menos").forEach((boton) => boton.addEventListener("click", () => establecer_palabras_por_minuto_rsvp(ajustar_palabras_por_minuto(perfil_actual.palabras_por_minuto_rsvp, -10))));
+  document.querySelectorAll("#rsvp-minuto-mas, #rsvp-inferior-mas").forEach((boton) => boton.addEventListener("click", () => establecer_palabras_por_minuto_rsvp(ajustar_palabras_por_minuto(perfil_actual.palabras_por_minuto_rsvp, 10))));
+  document.querySelectorAll<HTMLInputElement>("#velocidad, #velocidad-inferior").forEach((control) => control.addEventListener("input", (evento) => establecer_velocidad(Number((evento.currentTarget as HTMLInputElement).value))));
+  document.querySelectorAll("#velocidad-menos, #velocidad-inferior-menos").forEach((boton) => boton.addEventListener("click", () => establecer_velocidad(ajustar_velocidad(perfil_actual.velocidad, -0.1))));
+  document.querySelectorAll("#velocidad-mas, #velocidad-inferior-mas").forEach((boton) => boton.addEventListener("click", () => establecer_velocidad(ajustar_velocidad(perfil_actual.velocidad, 0.1))));
   document.querySelectorAll<HTMLButtonElement>("[data-velocidad]").forEach((boton) => boton.addEventListener("click", () => establecer_velocidad(Number(boton.dataset.velocidad))));
   sincronizar_campos_perfil();
   document.addEventListener("click", (evento) => {

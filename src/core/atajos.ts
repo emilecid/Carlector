@@ -9,6 +9,9 @@ export const ATAJOS_PREDETERMINADOS: AtajosLectura = {
   siguiente: { code: "ArrowRight", meta: false, alt: false, shift: false },
   modo_enfoque: { code: "KeyM", meta: false, alt: false, shift: false },
   alternar_pdf: { code: "KeyO", meta: false, alt: false, shift: false },
+  alternar_voz: { code: "KeyV", meta: false, alt: false, shift: false },
+  aumentar_velocidad: { code: "KeyD", meta: false, alt: false, shift: false },
+  reducir_velocidad: { code: "KeyA", meta: false, alt: false, shift: false },
 };
 
 const ACCIONES = Object.keys(ATAJOS_PREDETERMINADOS) as AccionAtajo[];
@@ -28,9 +31,12 @@ function clave_atajo(atajo: AtajoTeclado): string {
 export function normalizar_atajos(valor: Partial<AtajosLectura> | undefined): AtajosLectura {
   const resultado = {} as AtajosLectura;
   const ocupados = new Set<string>();
+  const propietarios_predeterminados = new Map(ACCIONES.map((accion) => [clave_atajo(ATAJOS_PREDETERMINADOS[accion]), accion]));
   for (const accion of ACCIONES) {
     const candidato = es_atajo_valido(valor?.[accion]) ? valor[accion] : ATAJOS_PREDETERMINADOS[accion];
-    const definitivo = ocupados.has(clave_atajo(candidato)) ? ATAJOS_PREDETERMINADOS[accion] : candidato;
+    const clave_candidato = clave_atajo(candidato);
+    const propietario = propietarios_predeterminados.get(clave_candidato);
+    const definitivo = ocupados.has(clave_candidato) || (propietario !== undefined && propietario !== accion) ? ATAJOS_PREDETERMINADOS[accion] : candidato;
     resultado[accion] = { ...definitivo };
     ocupados.add(clave_atajo(definitivo));
   }

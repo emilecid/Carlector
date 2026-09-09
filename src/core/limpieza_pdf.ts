@@ -21,6 +21,10 @@ export interface TextoNormalizadoPdf {
   cambios: CambioNormalizacionPdf[];
 }
 
+export interface OpcionesNormalizacionPdf {
+  codificacion_legacy?: boolean;
+}
+
 const VOCALES_AGUDAS: Record<string, string> = {
   a: "á", e: "é", i: "í", o: "ó", u: "ú", ı: "í",
   A: "Á", E: "É", I: "Í", O: "Ó", U: "Ú", İ: "Í",
@@ -30,12 +34,30 @@ const VOCALES_DIERESIS: Record<string, string> = {
   A: "Ä", E: "Ë", I: "Ï", O: "Ö", U: "Ü",
 };
 const PATRON_ARTEFACTO_TEX = /´\s*([aeiouAEIOUıİ])|˜\s*([nN])|¨\s*([aeiouAEIOU])|([\p{L}]\p{M}+)/gu;
+const CARACTERES_CODIFICACION_LEGACY: Record<string, string> = {
+  "¡": "Á", "…": "É", "Õ": "Í", "”": "Ó",
+  "·": "á", "È": "é", "Ì": "í", "Ï": "í", "Û": "ó", "˙": "ú",
+  "Ò": "ñ", "¸": "ü", "ˆ": "ö", "Ë": "è", "ø": "¿",
+};
+const PATRON_CODIFICACION_LEGACY = /[¡…Õ”·ÈÌÏÛ˙Ò¸ˆËø]/gu;
 
-export function normalizar_texto_pdf(original: string): TextoNormalizadoPdf {
+export function detectar_codificacion_legacy_pdf(textos: string[]): boolean {
+  const muestra = textos.join("\n");
+  const coincidencias = muestra.match(PATRON_CODIFICACION_LEGACY) ?? [];
+  if (coincidencias.length < 4) return false;
+  const distintos = new Set(coincidencias);
+  const incrustados = muestra.match(/[\p{L}][·ÈÌÏÛÒ¸ˆË][\p{L}]|[¡…Õ”][\p{Lu}]/gu)?.length ?? 0;
+  return distintos.size >= 2 && incrustados >= 2;
+}
+
+export function normalizar_texto_pdf(original: string, opciones: OpcionesNormalizacionPdf = {}): TextoNormalizadoPdf {
   let cursor_original = 0;
   let texto = "";
   const cambios: CambioNormalizacionPdf[] = [];
-  for (const coincidencia of original.matchAll(PATRON_ARTEFACTO_TEX)) {
+  const patron = opciones.codificacion_legacy
+    ? new RegExp(`${PATRON_ARTEFACTO_TEX.source}|(${PATRON_CODIFICACION_LEGACY.source})`, "gu")
+    : PATRON_ARTEFACTO_TEX;
+  for (const coincidencia of original.matchAll(patron)) {
     const inicio_original = coincidencia.index ?? 0;
     texto += original.slice(cursor_original, inicio_original).normalize("NFC");
     const antes = coincidencia[0];
@@ -45,7 +67,9 @@ export function normalizar_texto_pdf(original: string): TextoNormalizadoPdf {
         ? coincidencia[2] === "N" ? "Ñ" : "ñ"
         : coincidencia[3]
           ? VOCALES_DIERESIS[coincidencia[3]] ?? coincidencia[3]
-          : antes.normalize("NFC");
+          : opciones.codificacion_legacy && CARACTERES_CODIFICACION_LEGACY[antes]
+            ? CARACTERES_CODIFICACION_LEGACY[antes]
+            : antes.normalize("NFC");
     const inicio_normalizado = texto.length;
     texto += despues;
     cambios.push({

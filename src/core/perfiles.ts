@@ -23,10 +23,11 @@ export const PERFIL_PREDETERMINADO: PerfilLectura = {
   velocidad: 1,
   auto_scroll: true,
   modo_enfoque: false,
-  politica_matematica: "indicar",
+  politica_matematica: "leer",
   saltar_citas: false,
   modo_lectura: "continua",
   unidad_rsvp: "frase",
+  maximo_palabras_rsvp_visibles: 8,
   palabras_por_minuto: PALABRAS_POR_MINUTO_BASE,
   palabras_por_minuto_rsvp: PALABRAS_POR_MINUTO_BASE,
   voz_habilitada: true,
@@ -43,10 +44,10 @@ export const PERFIL_PREDETERMINADO: PerfilLectura = {
     acceso_libreta: true,
   },
   disposicion: {
-    ancho_biblioteca: 236,
-    ancho_inspector: 286,
-    alto_barra_superior: 58,
-    alto_controles: 76,
+    ancho_biblioteca: 280,
+    ancho_inspector: 320,
+    alto_barra_superior: 56,
+    alto_controles: 72,
     escala_controles: 1,
   },
   atajos: ATAJOS_PREDETERMINADOS,
@@ -69,12 +70,16 @@ function limitar(numero: unknown, minimo: number, maximo: number, alternativa: n
   return Number.isFinite(valor) ? Math.min(maximo, Math.max(minimo, valor)) : alternativa;
 }
 
+function migrar_dimension_predeterminada(valor: unknown, anterior: number, actual: number): unknown {
+  return Number(valor) === anterior ? actual : valor;
+}
+
 export function normalizar_disposicion(valor: Partial<DisposicionInterfaz> | undefined): DisposicionInterfaz {
   return {
-    ancho_biblioteca: limitar(valor?.ancho_biblioteca, 180, 420, PERFIL_PREDETERMINADO.disposicion.ancho_biblioteca),
-    ancho_inspector: limitar(valor?.ancho_inspector, 220, 480, PERFIL_PREDETERMINADO.disposicion.ancho_inspector),
-    alto_barra_superior: limitar(valor?.alto_barra_superior, 48, 88, PERFIL_PREDETERMINADO.disposicion.alto_barra_superior),
-    alto_controles: limitar(valor?.alto_controles, 56, 120, PERFIL_PREDETERMINADO.disposicion.alto_controles),
+    ancho_biblioteca: limitar(migrar_dimension_predeterminada(valor?.ancho_biblioteca, 236, 280), 180, 420, PERFIL_PREDETERMINADO.disposicion.ancho_biblioteca),
+    ancho_inspector: limitar(migrar_dimension_predeterminada(valor?.ancho_inspector, 286, 320), 220, 480, PERFIL_PREDETERMINADO.disposicion.ancho_inspector),
+    alto_barra_superior: limitar(migrar_dimension_predeterminada(valor?.alto_barra_superior, 58, 56), 48, 88, PERFIL_PREDETERMINADO.disposicion.alto_barra_superior),
+    alto_controles: limitar(migrar_dimension_predeterminada(valor?.alto_controles, 76, 72), 56, 120, PERFIL_PREDETERMINADO.disposicion.alto_controles),
     escala_controles: limitar(valor?.escala_controles, 0.8, 1.35, PERFIL_PREDETERMINADO.disposicion.escala_controles),
   };
 }
@@ -123,6 +128,16 @@ export function ajustar_palabras_por_minuto(palabras: number, cambio: number): n
   return Math.min(1200, Math.max(60, Math.round((palabras + cambio) / 10) * 10));
 }
 
+export function cambio_velocidad_reproduccion(
+  perfil: Pick<PerfilLectura, "velocidades_sincronizadas" | "ritmo_general" | "voz_habilitada" | "velocidad" | "modo_lectura" | "palabras_por_minuto" | "palabras_por_minuto_rsvp">,
+  direccion: -1 | 1,
+): PerfilLecturaParcial {
+  if (perfil.velocidades_sincronizadas) return velocidades_desde_ritmo(ajustar_ritmo_general(perfil.ritmo_general, direccion * 0.1));
+  if (perfil.voz_habilitada) return { velocidad: ajustar_velocidad(perfil.velocidad, direccion * 0.1) };
+  if (perfil.modo_lectura === "rsvp") return { palabras_por_minuto_rsvp: ajustar_palabras_por_minuto(perfil.palabras_por_minuto_rsvp, direccion * 10) };
+  return { palabras_por_minuto: ajustar_palabras_por_minuto(perfil.palabras_por_minuto, direccion * 10) };
+}
+
 export function normalizar_perfil(valor: PerfilLecturaParcial): PerfilLectura {
   const { estrategia_segmentacion: estrategia_legacy, maximo_palabras_segmento: maximo_legacy, palabras_rsvp: palabras_rsvp_legacy, ...vigente } = valor;
   void estrategia_legacy;
@@ -150,6 +165,7 @@ export function normalizar_perfil(valor: PerfilLecturaParcial): PerfilLectura {
     velocidades_sincronizadas,
     modo_lectura: vigente.modo_lectura === "rsvp" ? "rsvp" : "continua",
     unidad_rsvp: vigente.unidad_rsvp === "palabra" ? "palabra" : "frase",
+    maximo_palabras_rsvp_visibles: Math.round(limitar(vigente.maximo_palabras_rsvp_visibles, 1, 20, PERFIL_PREDETERMINADO.maximo_palabras_rsvp_visibles)),
     saltar_citas: vigente.saltar_citas === true,
     voz_habilitada: vigente.voz_habilitada !== false,
     motor_voz: vigente.motor_voz === "kokoro_onnx" ? "kokoro_onnx" : "sistema",

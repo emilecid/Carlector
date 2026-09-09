@@ -1,4 +1,12 @@
 :root {
+  --unidad-diseno: 8px;
+  --ancho-panel-biblioteca: 280px;
+  --ancho-panel-libreta: 320px;
+  --alto-barra-superior: 56px;
+  --alto-barra-inferior: 72px;
+  --ancho-lectura-optimo: 1200px;
+  --area-interactiva-minima: 32px;
+  --duracion-contextual: 240ms;
   --space-1: .25rem;
   --space-2: .5rem;
   --space-3: .75rem;

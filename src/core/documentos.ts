@@ -3,7 +3,7 @@ import { normalizar_texto_pdf, type CambioNormalizacionPdf } from "./limpieza_pd
 
 const PATRON_SIMBOLOS_MATEMATICOS = /[=≈≠≤≥∑∫√∞∂∇±×÷^_{}|]/g;
 const PATRON_FUENTE_MATEMATICA = /(?:math|symbol|cmr|cmmi|cmsy|msam|msbm|stix)/i;
-export const VERSION_CACHE_DOCUMENTO = 10;
+export const VERSION_CACHE_DOCUMENTO = 11;
 
 export interface GeometriaLineaPdf {
   x: number;
@@ -28,8 +28,8 @@ export interface BloqueDocumento {
   geometria_pdf?: GeometriaLineaPdf;
 }
 
-export function crear_bloque_pdf(id: string, pagina: number, contenido_original: string, fuentes: string[], geometria_pdf?: GeometriaLineaPdf): BloqueDocumento {
-  const normalizado = normalizar_texto_pdf(contenido_original);
+export function crear_bloque_pdf(id: string, pagina: number, contenido_original: string, fuentes: string[], geometria_pdf?: GeometriaLineaPdf, codificacion_legacy = false): BloqueDocumento {
+  const normalizado = normalizar_texto_pdf(contenido_original, { codificacion_legacy });
   const fue_modificado = normalizado.texto !== contenido_original;
   return {
     id,

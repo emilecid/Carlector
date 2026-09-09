@@ -3,7 +3,7 @@ use std::path::Path;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde::Serialize;
 
-const VERSION_CACHE_DOCUMENTO: u32 = 10;
+const VERSION_CACHE_DOCUMENTO: u32 = 11;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct BloqueMarkdown {
@@ -189,6 +189,6 @@ mod tests {
 
     #[test]
     fn usa_la_version_vigente_de_cache_documental() {
-        assert_eq!(VERSION_CACHE_DOCUMENTO, 10);
+        assert_eq!(VERSION_CACHE_DOCUMENTO, 11);
     }
 }

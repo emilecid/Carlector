@@ -6,6 +6,20 @@ const PATRON_MATEMATICA_TEXTO = /(?:\$[^$\n]+\$|\\\([^\n]+?\\\))/gi;
 const PATRON_CITA_NUMERICA = /\[\s*\d+[a-z]?(?:\s*[-–,;]\s*\d+[a-z]?)*\s*\]/giu;
 const PATRON_CITA_AUTOR_FECHA = /\((?=[^()]{0,600},\s*(?:1[5-9]|20)\d{2}[a-z]?\b)(?=[^()]{0,600}\p{L})[^()]+\)/giu;
 const ABREVIATURAS = new Set(["aprox", "art", "arts", "cap", "dr", "dra", "ej", "etc", "fig", "no", "num", "pag", "pags", "prof", "sr", "sra", "srta", "ud", "uds", "vol"]);
+const NOMBRES_COMANDOS_MATEMATICOS: Record<string, string> = {
+  alpha: "alfa", beta: "beta", gamma: "gamma", delta: "delta", epsilon: "épsilon", theta: "theta",
+  lambda: "lambda", mu: "mu", pi: "pi", rho: "rho", sigma: "sigma", phi: "fi", chi: "ji", psi: "psi", omega: "omega",
+  sum: "sumatoria", prod: "productoria", int: "integral", partial: "derivada parcial", infty: "infinito",
+  times: "por", cdot: "por", div: "dividido por", pm: "más menos", leq: "menor o igual", geq: "mayor o igual",
+  neq: "distinto de", approx: "aproximadamente", to: "tiende a", rightarrow: "implica",
+};
+const NOMBRES_SIMBOLOS_MATEMATICOS: Record<string, string> = {
+  "=": "igual", "+": "más", "-": "menos", "−": "menos", "×": "por", "÷": "dividido por", "/": "dividido por",
+  "≤": "menor o igual", "≥": "mayor o igual", "≠": "distinto de", "≈": "aproximadamente", "±": "más menos",
+  "∑": "sumatoria", "∏": "productoria", "∫": "integral", "√": "raíz cuadrada de", "∞": "infinito", "∂": "derivada parcial",
+  "α": "alfa", "β": "beta", "γ": "gamma", "δ": "delta", "ε": "épsilon", "θ": "theta", "λ": "lambda",
+  "μ": "mu", "π": "pi", "ρ": "rho", "σ": "sigma", "φ": "fi", "χ": "ji", "ψ": "psi", "ω": "omega",
+};
 
 export interface OpcionesSegmentacion { saltar_citas?: boolean }
 const OPCIONES_PREDETERMINADAS: OpcionesSegmentacion = { saltar_citas: false };
@@ -189,7 +203,9 @@ function dividir_por_puntuacion(texto: string): RangoTextoSegmentado[] {
 function esMatematicaHeuristica(texto: string): boolean {
   const limpio = texto.trim();
   if (!limpio) return false;
-  if (/^(?:\$\$|\\\[|<math)/i.test(limpio)) return true;
+  if (/^(?:\$\$|\$|\\\[|\\\(|<math)/i.test(limpio) && /(?:\$\$|\$|\\\]|\\\)|<\/math>)$/i.test(limpio)) return true;
+  const sin_matematica_en_linea = limpio.replace(PATRON_MATEMATICA_TEXTO, " ");
+  if (sin_matematica_en_linea !== limpio && /\p{L}{2,}/u.test(sin_matematica_en_linea)) return false;
   const simbolos = (limpio.match(/[=≈≠≤≥∑∫√∞∂∇^_{}]/g) ?? []).length;
   const palabras = (limpio.match(/\p{L}{2,}/gu) ?? []).length;
   return simbolos >= 2 && simbolos >= palabras;
@@ -204,6 +220,116 @@ function quitar_citas_bibliograficas(texto: string): string {
     .trim();
 }
 
+function extraer_grupo_tex(texto: string, inicio: number): { contenido: string; fin: number } | null {
+  if (texto[inicio] !== "{") return null;
+  let profundidad = 0;
+  for (let indice = inicio; indice < texto.length; indice += 1) {
+    if (texto[indice] === "{") profundidad += 1;
+    else if (texto[indice] === "}") profundidad -= 1;
+    if (profundidad === 0) return { contenido: texto.slice(inicio + 1, indice), fin: indice + 1 };
+  }
+  return null;
+}
+
+function sustituir_fracciones_tex(texto: string): string {
+  let resultado = texto;
+  let inicio = resultado.search(/\\(?:d|t)?frac\s*\{/u);
+  while (inicio >= 0) {
+    const llave_numerador = resultado.indexOf("{", inicio);
+    const numerador = extraer_grupo_tex(resultado, llave_numerador);
+    const llave_denominador = numerador ? resultado.slice(numerador.fin).search(/\S/u) + numerador.fin : -1;
+    const denominador = numerador && llave_denominador >= numerador.fin ? extraer_grupo_tex(resultado, llave_denominador) : null;
+    if (!numerador || !denominador) break;
+    const reemplazo = ` fracción ${sustituir_fracciones_tex(numerador.contenido)} sobre ${sustituir_fracciones_tex(denominador.contenido)} `;
+    resultado = resultado.slice(0, inicio) + reemplazo + resultado.slice(denominador.fin);
+    inicio = resultado.search(/\\(?:d|t)?frac\s*\{/u);
+  }
+  return resultado;
+}
+
+interface NodoMathml {
+  nombre: string;
+  texto: string;
+  hijos: NodoMathml[];
+}
+
+function contenido_nodo_mathml(nodo: NodoMathml): string {
+  const contenidos = nodo.hijos.map(contenido_nodo_mathml).filter(Boolean);
+  const unido = [nodo.texto, ...contenidos].filter(Boolean).join(" ");
+  if (nodo.nombre === "annotation" || nodo.nombre === "annotation-xml") return "";
+  if (nodo.nombre === "mfrac") return `fracción ${contenidos[0] ?? ""} sobre ${contenidos[1] ?? ""}`;
+  if (nodo.nombre === "msqrt") return `raíz cuadrada de ${unido}`;
+  if (nodo.nombre === "mroot") return `raíz ${contenidos[1] ?? ""} de ${contenidos[0] ?? ""}`;
+  if (nodo.nombre === "msup") {
+    const exponente = contenidos[1] ?? "";
+    const potencia = exponente === "2" ? "al cuadrado" : exponente === "3" ? "al cubo" : `elevado a ${exponente}`;
+    return `${contenidos[0] ?? ""} ${potencia}`;
+  }
+  if (nodo.nombre === "msub") return `${contenidos[0] ?? ""} subíndice ${contenidos[1] ?? ""}`;
+  return unido;
+}
+
+function verbalizar_estructura_mathml(mathml: string): string {
+  const raiz: NodoMathml = { nombre: "raiz", texto: "", hijos: [] };
+  const pila = [raiz];
+  for (const token of mathml.match(/<[^>]+>|[^<]+/gu) ?? []) {
+    if (token.startsWith("</")) {
+      if (pila.length > 1) pila.pop();
+      continue;
+    }
+    if (token.startsWith("<")) {
+      if (/^<\?|^<!/u.test(token)) continue;
+      const nombre = token.match(/^<\s*(?:[\w.-]+:)?([\w.-]+)/u)?.[1]?.toLocaleLowerCase("es") ?? "";
+      if (!nombre) continue;
+      const nodo: NodoMathml = { nombre, texto: "", hijos: [] };
+      pila.at(-1)?.hijos.push(nodo);
+      if (!/\/\s*>$/u.test(token)) pila.push(nodo);
+      continue;
+    }
+    const actual = pila.at(-1);
+    if (actual) actual.texto += ` ${token.trim()} `;
+  }
+  return contenido_nodo_mathml(raiz);
+}
+
+function verbalizar_matematica(visible: string): string | null {
+  let texto = visible.normalize("NFC");
+  if (/<(?:[\w.-]+:)?math\b/iu.test(texto)) texto = verbalizar_estructura_mathml(texto);
+  texto = texto
+    .replace(/<annotation\b[\s\S]*?<\/annotation>/giu, " ")
+    .replace(/<mfrac\b[^>]*>/giu, " fracción ")
+    .replace(/<msqrt\b[^>]*>/giu, " raíz cuadrada de ")
+    .replace(/<mroot\b[^>]*>/giu, " raíz de ")
+    .replace(/<msup\b[^>]*>/giu, " potencia ")
+    .replace(/<msub\b[^>]*>/giu, " subíndice ")
+    .replace(/<[^>]+>/gu, " ")
+    .replace(/&(?:InvisibleTimes|times);/giu, " por ")
+    .replace(/&le;|&#x2264;|&#8804;/giu, " menor o igual ")
+    .replace(/&ge;|&#x2265;|&#8805;/giu, " mayor o igual ")
+    .replace(/&ne;|&#x2260;|&#8800;/giu, " distinto de ")
+    .replace(/&lt;/giu, " menor que ")
+    .replace(/&gt;/giu, " mayor que ")
+    .replace(/&amp;/giu, " y ");
+  texto = texto.replace(/^\s*(?:\$\$|\$|\\\[|\\\()/u, "").replace(/(?:\$\$|\$|\\\]|\\\))\s*$/u, "");
+  texto = sustituir_fracciones_tex(texto)
+    .replace(/\\sqrt\s*\{([^{}]+)\}/gu, " raíz cuadrada de $1 ")
+    .replace(/\^\s*(?:\{\s*2\s*\}|2)\b/gu, " al cuadrado ")
+    .replace(/\^\s*(?:\{\s*3\s*\}|3)\b/gu, " al cubo ")
+    .replace(/\^\s*\{([^{}]+)\}/gu, " elevado a $1 ")
+    .replace(/\^\s*([\p{L}\p{N}])/gu, " elevado a $1 ")
+    .replace(/_\s*\{([^{}]+)\}/gu, " subíndice $1 ")
+    .replace(/_\s*([\p{L}\p{N}])/gu, " subíndice $1 ")
+    .replace(/\\([A-Za-z]+)/gu, (_, comando: string) => ` ${NOMBRES_COMANDOS_MATEMATICOS[comando] ?? comando} `);
+  for (const [simbolo, nombre] of Object.entries(NOMBRES_SIMBOLOS_MATEMATICOS)) texto = texto.replaceAll(simbolo, ` ${nombre} `);
+  texto = texto
+    .replace(/[{}$]/gu, " ")
+    .replace(/\s+([,.;:!?])/gu, "$1")
+    .replace(/\s{2,}/gu, " ")
+    .trim();
+  if (!/[\p{L}\p{N}]/u.test(texto)) return null;
+  return /[.!?…]$/u.test(texto) ? texto : `${texto}.`;
+}
+
 export function texto_para_locucion(
   visible: string,
   tipo: TipoFragmento,
@@ -211,13 +337,18 @@ export function texto_para_locucion(
   saltar_citas = false,
 ): string | null {
   if (tipo !== "matematica") {
-    const canonico = normalizar_texto_lectura(visible).texto;
+    const con_matematica_verbalizada = visible.replace(PATRON_MATEMATICA_TEXTO, (matematica) => {
+      if (politica === "omitir") return " ";
+      if (politica === "indicar") return " Ecuación ";
+      return ` ${verbalizar_matematica(matematica)?.replace(/[.!?…]$/u, "") ?? matematica} `;
+    });
+    const canonico = normalizar_texto_lectura(con_matematica_verbalizada).texto;
     const texto = saltar_citas ? quitar_citas_bibliograficas(canonico) : canonico;
     return /[\p{L}\p{N}]/u.test(texto) ? texto : null;
   }
   if (politica === "omitir") return null;
   if (politica === "indicar") return "Ecuación.";
-  return visible.replace(PATRON_MATEMATICA_BLOQUE, " ").replace(PATRON_MATEMATICA_TEXTO, " ").trim() || visible.trim();
+  return verbalizar_matematica(visible);
 }
 
 interface FragmentoConFuente {
