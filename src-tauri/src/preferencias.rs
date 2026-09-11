@@ -25,8 +25,8 @@ fn abrir_ventana_preferencias<R: Runtime>(aplicacion: &AppHandle<R>) -> tauri::R
         WebviewUrl::App("index.html?preferencias=1".into()),
     )
     .title("Configuración — Carlector")
-    .inner_size(720.0, 780.0)
-    .min_inner_size(560.0, 620.0)
+    .inner_size(900.0, 700.0)
+    .min_inner_size(900.0, 700.0)
     .resizable(true)
     .center()
     .build()?;

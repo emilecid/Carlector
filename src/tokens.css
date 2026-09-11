@@ -7,6 +7,10 @@
   --ancho-lectura-optimo: 1200px;
   --area-interactiva-minima: 32px;
   --duracion-contextual: 240ms;
+  --margen-documento-minimo: 80px;
+  --margen-documento-maximo: 120px;
+  --ancho-panel-pdf-minimo: 360px;
+  --ancho-divisor-pdf: 8px;
   --space-1: .25rem;
   --space-2: .5rem;
   --space-3: .75rem;
@@ -27,7 +31,7 @@
   --z-toast: 300;
   --duration-fast: 140ms;
   --ease-out: cubic-bezier(.2,.8,.2,1);
-  --ancho-contenido-preferencias: 42rem;
+  --ancho-contenido-preferencias: 900px;
   --color-canvas: var(--fondo);
   --color-surface: var(--superficie);
   --color-panel: var(--panel);

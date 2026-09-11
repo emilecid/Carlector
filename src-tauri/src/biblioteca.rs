@@ -367,18 +367,29 @@ impl RepositorioBiblioteca {
             let interna = carpeta.ruta.as_deref().map(Path::new).is_some_and(|ruta| ruta.starts_with(&self.directorio_biblioteca) && ruta.is_dir());
             if !interna { self.conexion.execute("DELETE FROM carpetas WHERE id = ?1", [&carpeta.id])?; }
         }
-        for entrada in fs::read_dir(&self.directorio_biblioteca)? {
-            let entrada = entrada?;
-            let tipo = entrada.file_type()?;
-            if tipo.is_symlink() { continue; }
-            if tipo.is_dir() {
+        let mut pendientes = vec![self.directorio_biblioteca.clone()];
+        let mut rutas_carpetas = Vec::new();
+        while let Some(directorio) = pendientes.pop() {
+            let mut entradas = fs::read_dir(directorio)?.collect::<Result<Vec<_>, _>>()?;
+            entradas.sort_by_key(fs::DirEntry::file_name);
+            for entrada in entradas {
+                let tipo = entrada.file_type()?;
+                if tipo.is_symlink() || !tipo.is_dir() { continue; }
                 let ruta = entrada.path().canonicalize()?;
+                if !ruta.starts_with(&self.directorio_biblioteca) { continue; }
                 let ruta_texto = ruta.to_string_lossy().to_string();
                 let nombre = entrada.file_name().to_string_lossy().to_string();
                 let id = format!("carpeta-{:x}", calcular_hash_ruta(&ruta_texto));
                 let orden = self.contar_carpetas()?;
                 self.conexion.execute("INSERT OR IGNORE INTO carpetas (id, nombre, orden, ruta) VALUES (?1, ?2, ?3, ?4)", params![id, nombre, orden, ruta_texto])?;
                 self.conexion.execute("UPDATE carpetas SET nombre = ?1 WHERE ruta = ?2", params![nombre, ruta_texto])?;
+                rutas_carpetas.push(ruta_texto);
+                pendientes.push(ruta);
+            }
+        }
+        for carpeta in self.listar_carpetas()? {
+            if carpeta.ruta.as_ref().is_none_or(|ruta| !rutas_carpetas.contains(ruta)) {
+                self.conexion.execute("DELETE FROM carpetas WHERE id = ?1", [&carpeta.id])?;
             }
         }
         let carpetas = self.listar_carpetas()?;
@@ -414,18 +425,26 @@ impl RepositorioBiblioteca {
     pub fn renombrar_carpeta(&self, id: &str, nombre: &str) -> Result<Carpeta, ErrorBiblioteca> {
         let nombre = validar_nombre(nombre)?;
         let anterior = self.ruta_carpeta(id)?;
-        let destino = self.directorio_biblioteca.join(&nombre);
+        let directorio_padre = anterior.parent().filter(|ruta| ruta.starts_with(&self.directorio_biblioteca)).unwrap_or(&self.directorio_biblioteca);
+        let destino = directorio_padre.join(&nombre);
         if destino.exists() && destino != anterior { return Err(ErrorBiblioteca::OperacionInvalida(format!("La carpeta ya existe: {nombre}"))); }
         if destino != anterior { fs::rename(&anterior, &destino)?; }
         let destino = destino.canonicalize()?;
-        let documentos = self.listar_documentos()?.into_iter().filter(|documento| documento.carpeta_id.as_deref() == Some(id)).collect::<Vec<_>>();
+        let documentos = self.listar_documentos()?.into_iter().filter(|documento| Path::new(&documento.ruta).starts_with(&anterior)).collect::<Vec<_>>();
         for documento in documentos {
-            if let Some(archivo) = Path::new(&documento.ruta).file_name() {
-                self.conexion.execute("UPDATE documentos SET ruta = ?1 WHERE id = ?2", params![destino.join(archivo).to_string_lossy(), documento.id])?;
-            }
+            let ruta_anterior = Path::new(&documento.ruta);
+            let relativa = ruta_anterior.strip_prefix(&anterior).unwrap_or(ruta_anterior);
+            self.conexion.execute("UPDATE documentos SET ruta = ?1 WHERE id = ?2", params![destino.join(relativa).to_string_lossy(), documento.id])?;
+        }
+        let carpetas_descendientes = self.listar_carpetas()?.into_iter().filter(|carpeta| carpeta.ruta.as_deref().is_some_and(|ruta| Path::new(ruta).starts_with(&anterior))).collect::<Vec<_>>();
+        for carpeta in carpetas_descendientes {
+            let ruta_anterior = Path::new(carpeta.ruta.as_deref().unwrap_or_default());
+            let relativa = ruta_anterior.strip_prefix(&anterior).unwrap_or(ruta_anterior);
+            let ruta_nueva = if relativa.as_os_str().is_empty() { destino.clone() } else { destino.join(relativa) }.to_string_lossy().to_string();
+            let nombre_nuevo = if carpeta.id == id { nombre.as_str() } else { carpeta.nombre.as_str() };
+            self.conexion.execute("UPDATE carpetas SET nombre = ?1, ruta = ?2 WHERE id = ?3", params![nombre_nuevo, ruta_nueva, carpeta.id])?;
         }
         let ruta = destino.to_string_lossy().to_string();
-        self.conexion.execute("UPDATE carpetas SET nombre = ?1, ruta = ?2 WHERE id = ?3", params![nombre, ruta, id])?;
         self.obtener_carpeta_por_ruta(&ruta)
     }
 
@@ -887,6 +906,33 @@ mod pruebas {
         assert_eq!(finalizados.len(), 1);
         assert!(finalizados[0].ruta.ends_with("artículo revisado.md"));
         assert!(finalizados[0].carpeta_id.is_some());
+        fs::remove_dir_all(directorio).expect("limpiar temporal");
+    }
+
+    #[test]
+    fn sincroniza_subcarpetas_y_documentos_anidados() {
+        let directorio = std::env::temp_dir().join(format!("carlector-subcarpetas-{}", std::process::id()));
+        fs::create_dir_all(&directorio).expect("crear temporal");
+        let repositorio = abrir_base_datos(&directorio.join("prueba.db")).expect("abrir base");
+        let ciencia = directorio.join("Biblioteca").join("Ciencia");
+        let fisica = ciencia.join("Física");
+        fs::create_dir_all(&fisica).expect("crear subcarpetas desde Finder");
+        fs::write(ciencia.join("resumen.md"), "# Ciencia").expect("crear documento en carpeta");
+        fs::write(fisica.join("mecánica.pdf"), b"%PDF").expect("crear documento anidado");
+
+        repositorio.sincronizar_biblioteca().expect("sincronizar árbol");
+        let carpetas = repositorio.listar_carpetas().expect("listar carpetas");
+        let documentos = repositorio.listar_documentos().expect("listar documentos");
+        let carpeta_fisica = carpetas.iter().find(|carpeta| carpeta.nombre == "Física").expect("detectar subcarpeta");
+        let documento_fisica = documentos.iter().find(|documento| documento.titulo == "mecánica").expect("detectar documento anidado");
+
+        assert_eq!(carpetas.len(), 2);
+        assert_eq!(documentos.len(), 2);
+        assert_eq!(documento_fisica.carpeta_id.as_deref(), Some(carpeta_fisica.id.as_str()));
+        let renombrada = repositorio.renombrar_carpeta(&carpeta_fisica.id, "Mecánica").expect("renombrar subcarpeta");
+        let actualizado = repositorio.obtener_documento(&documento_fisica.id).expect("conservar documento anidado");
+        assert_eq!(Path::new(renombrada.ruta.as_deref().expect("ruta renombrada")).parent(), ciencia.canonicalize().ok().as_deref());
+        assert!(Path::new(&actualizado.ruta).starts_with(renombrada.ruta.as_deref().expect("ruta renombrada")));
         fs::remove_dir_all(directorio).expect("limpiar temporal");
     }
 

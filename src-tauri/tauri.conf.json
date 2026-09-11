@@ -10,7 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "Carlector", "width": 1360, "height": 860, "minWidth": 900, "minHeight": 620 }],
+    "windows": [{ "title": "Carlector", "width": 1360, "height": 860, "minWidth": 900, "minHeight": 620, "maximized": true }],
     "security": { "csp": "default-src 'self'; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost" }
   },
   "bundle": {
